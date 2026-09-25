@@ -38,7 +38,7 @@ TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 GITHUB_REPO = "Prajaya2017/cattle_methane_flux"
 BRANCH = "main"
-FILENAME = "Eage_TGA310_methane_CSFlux.dat"
+FILENAME ="Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME}"
 
 # How often to re-download data from GitHub (minutes)
