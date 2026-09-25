@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Setup - West Logan Farm</title>
+<!--
+  Setup page shown in the dashboard's "Setup" tab.
+  Edit text/photos here - no Python changes needed.
+  To add a photo: put the file in this folder (assets/setup/) and copy a <figure> block.
+-->
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; padding: 12px; background: #fff; color: #333; }
+  .intro { max-width: 900px; margin: 4px auto 16px; text-align: center; font-size: 14px; line-height: 1.5; }
+  .grid { max-width: 1300px; margin: 0 auto; display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .card { margin: 0; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); display: flex; flex-direction: column; }
+  .card img { width: 100%; height: 320px; object-fit: contain; background: #f4f4f4; display: block; }
+  figcaption { padding: 10px 12px; }
+  h3 { margin: 0 0 4px; font-size: 15px; }
+  p { margin: 0; font-size: 13px; color: #444; line-height: 1.4; }
+</style>
+</head>
+<body>
+  <p class="intro">Eddy covariance (EC) station measuring methane (CH4), CO2, water vapor and energy fluxes from grazing cattle at the Utah State University West Logan Farm (WL), Logan, Utah. Methane is measured with a Campbell Scientific TGA310 trace gas analyzer; fluxes are computed on the datalogger and reported every 30 minutes in the CSFlux table.</p>
+
+  <div class="grid">
+    <figure class="card">
+      <a href="02_site_map.png" target="_blank" title="Open full size"><img src="02_site_map.png" alt="Site map - West Logan Farm"></a>
+      <figcaption><h3>Site map - West Logan Farm</h3><p>Field layout of the USU West Logan Farm. The tower (red triangle) sits between fields WL-1B and WL-1D. The red arrow marks the dominant wind direction, which carries air from the grazed fields to the tower so the flux footprint covers the pasture.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="01_tower_installation.jpg" target="_blank" title="Open full size"><img src="01_tower_installation.jpg" alt="Tower installation"></a>
+      <figcaption><h3>Tower installation</h3><p>Setting up the tripod tower and mast. The long crossarm holds the sonic anemometer and gas sample inlet; the lower arms hold the meteorological sensors, with the datalogger enclosure mounted near the base.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="03_completed_station.jpg" target="_blank" title="Open full size"><img src="03_completed_station.jpg" alt="Completed EC station"></a>
+      <figcaption><h3>Completed EC station</h3><p>The finished station: sonic anemometer and inlet on the boom, radiation-shielded air temperature / RH sensors, instrument enclosures, and a solar power system for continuous operation.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="04_maintenance_ch4_spikes.jpg" target="_blank" title="Open full size"><img src="04_maintenance_ch4_spikes.jpg" alt="Station maintenance and CH4 plumes"></a>
+      <figcaption><h3>Station maintenance and CH4 plumes</h3><p>Servicing the sensor boom. The inset shows high-frequency CH4 concentration: short spikes from about 1,810 to over 2,100 ppb within ~30 s as methane plumes from nearby cattle pass the inlet.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="05_cattle.jpg" target="_blank" title="Open full size"><img src="05_cattle.jpg" alt="Cattle herd"></a>
+      <figcaption><h3>Cattle herd</h3><p>Cattle at the site - the methane source being measured. Animals are ear-tagged, so herd information can be linked to the flux record.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="06_trailcam_1215.jpg" target="_blank" title="Open full size"><img src="06_trailcam_1215.jpg" alt="Trail camera - 09/24/2026 12:15"></a>
+      <figcaption><h3>Trail camera - 09/24/2026 12:15</h3><p>The tower trail camera documents when and where animals are grazing in the footprint, which helps interpret changes in the measured CH4 flux.</p></figcaption>
+    </figure>
+
+    <figure class="card">
+      <a href="07_trailcam_1258.jpg" target="_blank" title="Open full size"><img src="07_trailcam_1258.jpg" alt="Trail camera - 09/24/2026 12:58"></a>
+      <figcaption><h3>Trail camera - 09/24/2026 12:58</h3><p>About 45 minutes later, cattle have moved closer to the tower. Animal position relative to the footprint strongly affects the CH4 flux the tower sees.</p></figcaption>
+    </figure>
+  </div>
+</body>
+</html>

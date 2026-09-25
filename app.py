@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Sep 25 12:50:32 2026
-
-@author: pprajapati
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Dash app: CSFlux (TGA310 methane EC) dashboard.
 
-- Reads Cattle_Experiment_Eagle_TGA310_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
+- Reads Eage_TGA310_methane_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
 - Plots ONLY main flux and meteorological variables
   (no QC flags, no SIGMA/statistics, no sample counts, no diagnostics)
-- Tab "Fluxes" and Tab "Meteorology", grid of subplots, calendar date-range picker
+- Tab "Setup" (site photos + descriptions), "Fluxes" and "Meteorology", grid of subplots, calendar date-range picker
 - If start_date == end_date, shows the FULL single day (00:00:00 to 23:59:59.999999)
 - Duplicate / out-of-order records are removed (sorted by TIMESTAMP)
 - Render-ready: start with  gunicorn app:server
@@ -45,7 +38,7 @@ TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 GITHUB_REPO = "Prajaya2017/cattle_methane_flux"
 BRANCH = "main"
-FILENAME = "Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
+FILENAME = "Eage_TGA310_methane_CSFlux.dat"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME}"
 
 # How often to re-download data from GitHub (minutes)
@@ -318,6 +311,24 @@ tab_names = list(pages.keys())
 
 
 # =========================
+# Setup tab (photos live in assets/setup/, served automatically by Dash)
+# =========================
+SETUP_TAB = "Setup"
+
+# Page content lives in assets/setup/setup.html (edit that file, not this code)
+SETUP_PAGE = "setup/setup.html"
+
+
+def setup_layout():
+    return html.Iframe(
+        src=app.get_asset_url(SETUP_PAGE),
+        style={"width": "100%", "height": "calc(100vh - 140px)", "minHeight": "600px",
+               "border": "none"},
+        title="Site setup",
+    )
+
+
+# =========================
 # Layout
 # =========================
 TAB_STYLE = {
@@ -359,6 +370,7 @@ def serve_layout():
                 children=[
                     html.H3("TGA310 Methane Flux - CSFlux", style={"margin": "0", "textAlign": "center"}),
                     html.Div(
+                        id="range-row",
                         style={
                             "display": "inline-flex",
                             "alignItems": "center",
@@ -382,9 +394,9 @@ def serve_layout():
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
                 ],
             ),
-            dcc.Tabs(id="tabs", value=tab_names[0] if tab_names else None, children=[
+            dcc.Tabs(id="tabs", value=SETUP_TAB, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
-                for n in tab_names
+                for n in [SETUP_TAB] + tab_names
             ]),
             html.Div(id="tab-content", style={"marginTop": "8px"}),
             # Re-check GitHub while the page is open
@@ -399,6 +411,29 @@ app.layout = serve_layout
 # =========================
 # Callbacks
 # =========================
+RANGE_ROW_STYLE = {
+    "display": "inline-flex",
+    "alignItems": "center",
+    "justifyContent": "center",
+    "gap": "10px",
+    "flexWrap": "wrap",
+}
+
+
+@app.callback(
+    Output("range-row", "style"),
+    Output("last-updated", "style"),
+    Input("tabs", "value"),
+)
+def toggle_range(tab_value):
+    """Date picker isn't used on the Setup tab."""
+    hidden = tab_value == SETUP_TAB
+    lu = {"fontSize": "12px", "color": "#666"}
+    if hidden:
+        return {**RANGE_ROW_STYLE, "display": "none"}, {**lu, "display": "none"}
+    return RANGE_ROW_STYLE, lu
+
+
 @app.callback(
     Output("dp-range", "max_date_allowed"),
     Output("dp-range", "end_date"),
@@ -426,6 +461,9 @@ def refresh_dates(_n, end_date, old_max):
     Input("refresh", "n_intervals"),
 )
 def render_tab(tab_value, start_date, end_date, _n):
+    if tab_value == SETUP_TAB:
+        return setup_layout()
+
     df, units_map = load_data()
     dff = filter_df_by_datepicker_range(df, start_date, end_date)
     if dff.empty:
