@@ -2,10 +2,10 @@
 """
 Dash app: CSFlux (TGA310 methane EC) dashboard.
 
-- Reads Eage_TGA310_methane_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
+- Reads Cattle_Experiment_Eagle_TGA310_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
 - Plots ONLY main flux and meteorological variables
   (no QC flags, no SIGMA/statistics, no sample counts, no diagnostics)
-- Tab "Setup" (site photos + descriptions), "Fluxes" and "Meteorology", grid of subplots, calendar date-range picker
+- Tabs "Site and Setup" (site photos + descriptions), "Fluxes and Turbulence" and "Meteorology", grid of subplots, calendar date-range picker
 - If start_date == end_date, shows the FULL single day (00:00:00 to 23:59:59.999999)
 - Duplicate / out-of-order records are removed (sorted by TIMESTAMP)
 - Render-ready: start with  gunicorn app:server
@@ -23,6 +23,7 @@ import threading
 import time
 from io import StringIO
 import requests
+import numpy as np
 import pandas as pd
 
 from dash import Dash, dcc, html, Input, Output, State
@@ -38,7 +39,7 @@ TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 GITHUB_REPO = "Prajaya2017/cattle_methane_flux"
 BRANCH = "main"
-FILENAME ="Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
+FILENAME = "Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME}"
 
 # How often to re-download data from GitHub (minutes)
@@ -49,7 +50,7 @@ ROW_HEIGHT_PX = 230
 
 # Main variables only, grouped into tabs (edit to add/remove)
 TABS = {
-    "Fluxes": [
+    "Fluxes and Turbulence": [
         "FCH4_mass",     # CH4 flux
         "FC_mass",       # CO2 flux
         "LE",            # latent heat flux
@@ -61,7 +62,8 @@ TABS = {
         "Bowen_ratio",
     ],
     "Meteorology": [
-        "TA_1_1_1",      # air temperature
+        ("Air & soil temperature (deg C)",
+         [("TA_1_1_1", "Air temp"), ("TS_1_1_1", "Soil temp")]),   # one plot, two lines
         "RH_1_1_1",      # relative humidity
         "T_DP_1_1_1",    # dew point
         "e_amb",         # vapor pressure
@@ -70,9 +72,26 @@ TABS = {
         "WS",            # wind speed
         "WS_MAX",        # max wind speed
         "WD",            # wind direction
-        "TS_1_1_1",      # soil temperature
         "SWC_1_1_1",     # soil water content
     ],
+}
+
+# Wind direction correction: added to WD (compass wind direction) when the data is read
+WD_COL = "WD"
+WD_OFFSET_DEG = 180
+WS_COL = "WS"
+
+FLUX_TAB = "Fluxes and Turbulence"
+FCH4_COL, FCH4_QC_COL = "FCH4_mass", "FCH4_QC"     # ugCH4 m-2 s-1
+FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
+M_CH4, M_CO2 = 16.04, 44.01                        # g mol-1
+
+# Wind direction filter (degrees, after offset). N wraps around 0.
+WD_SECTORS = {
+    "N (337.5-22.5)": (337.5, 22.5), "NE (22.5-67.5)": (22.5, 67.5),
+    "E (67.5-112.5)": (67.5, 112.5), "SE (112.5-157.5)": (112.5, 157.5),
+    "S (157.5-202.5)": (157.5, 202.5), "SW (202.5-247.5)": (202.5, 247.5),
+    "W (247.5-292.5)": (247.5, 292.5), "NW (292.5-337.5)": (292.5, 337.5),
 }
 
 # Optional fixed Y ranges, e.g. {"FCH4_mass": [-1, 5]}
@@ -147,6 +166,10 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
         if c != TIME_COL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    # Wind direction offset (e.g. sonic mounted pointing the opposite way)
+    if WD_COL in df.columns and WD_OFFSET_DEG:
+        df[WD_COL] = (df[WD_COL] + WD_OFFSET_DEG) % 360
+
     # Remove duplicate records (logger re-collection) and sort by time
     df = df.drop_duplicates(subset=[TIME_COL], keep="last").sort_values(TIME_COL).reset_index(drop=True)
     return df
@@ -210,11 +233,19 @@ def choose_axis_settings(dff: pd.DataFrame):
     return "M6", "%y/%m/%d"
 
 
+COMBO_COLORS = ["#1f77b4", "#8c564b", "#2ca02c", "#d62728"]
+
+
+def panel_vars(panel):
+    """Variables used by a panel: a column name, or (title, [(col, label), ...])."""
+    return [panel] if isinstance(panel, str) else [c for c, _ in panel[1]]
+
+
 def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) -> go.Figure:
     n_rows = max(1, math.ceil(len(vars_list) / GRID_COLS))
     n_cells = n_rows * GRID_COLS
 
-    subplot_titles = [format_title(v, units_map) for v in vars_list]
+    subplot_titles = [format_title(v, units_map) if isinstance(v, str) else v[0] for v in vars_list]
     subplot_titles += [""] * (n_cells - len(vars_list))
 
     fig = make_subplots(
@@ -228,21 +259,40 @@ def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) ->
     fig.update_xaxes(tickfont=dict(size=10))
     fig.update_yaxes(tickfont=dict(size=10))
 
-    for i, v in enumerate(vars_list):
+    legend_panel = None
+    for i, panel in enumerate(vars_list):
         r = i // GRID_COLS + 1
         c = i % GRID_COLS + 1
-        fig.add_trace(
-            go.Scatter(
-                x=df[TIME_COL],
-                y=df[v],
-                mode="lines",
-                showlegend=False,
-                hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{v}: " + "%{y}<extra></extra>"),
-            ),
-            row=r, col=c,
-        )
-        if v in Y_RANGES:
-            fig.update_yaxes(range=Y_RANGES[v], row=r, col=c)
+        if isinstance(panel, str):
+            series = [(panel, panel, None, False)]
+        else:
+            series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)], True)
+                      for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
+            if legend_panel is None:
+                legend_panel = i
+        for col, lab, color, show in series:
+            fig.add_trace(
+                go.Scatter(
+                    x=df[TIME_COL],
+                    y=df[col],
+                    mode="lines",
+                    name=lab,
+                    showlegend=show,
+                    line=dict(color=color) if color else None,
+                    hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
+                ),
+                row=r, col=c,
+            )
+            if col in Y_RANGES:
+                fig.update_yaxes(range=Y_RANGES[col], row=r, col=c)
+
+    if legend_panel is not None:
+        # put the legend inside the combined panel (top-left corner)
+        n = legend_panel + 1
+        xd = fig.layout["xaxis" if n == 1 else f"xaxis{n}"].domain
+        yd = fig.layout["yaxis" if n == 1 else f"yaxis{n}"].domain
+        fig.update_layout(legend=dict(x=xd[0] + 0.005, y=yd[1] - 0.005, xanchor="left", yanchor="top",
+                                      bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)))
 
     tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
     fig.update_xaxes(
@@ -263,57 +313,66 @@ def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) ->
 # =========================
 app = Dash(__name__, suppress_callback_exceptions=True)
 server = app.server          # Render / gunicorn entry point:  gunicorn app:server
-app.title = "CSFlux Dashboard"
+app.title = "Cattle Methane Emission Measurement"
 
 
 # =========================
 # Data cache (reloaded from GitHub every REFRESH_MINUTES)
 # =========================
-_DATA = {"df": pd.DataFrame(), "units": {}, "loaded_at": 0.0}
+_DATA = {"df": pd.DataFrame(), "units": {}, "loaded_at": 0.0, "error": ""}
 _LOCK = threading.Lock()
+RETRY_SECONDS_WHEN_EMPTY = 60   # while there is no data yet, re-try GitHub every minute
 
 
 def load_data(force: bool = False):
-    """Return (df, units_map). Re-downloads from GitHub if cache is older than REFRESH_MINUTES."""
+    """
+    Return (df, units_map). Re-downloads from GitHub if the cache is older than REFRESH_MINUTES.
+    Never raises: if GitHub can't be read, the app keeps running (with the last good data,
+    or with an empty table + message) and tries again later.
+    """
     with _LOCK:
         age = time.time() - _DATA["loaded_at"]
-        if force or _DATA["df"].empty or age > REFRESH_MINUTES * 60:
+        max_age = RETRY_SECONDS_WHEN_EMPTY if _DATA["df"].empty else REFRESH_MINUTES * 60
+        if force or age > max_age:
             try:
                 text = fetch_toa5_text_from_github()
                 _DATA["units"] = read_units_map_from_toa5_text(text)
                 _DATA["df"] = read_toa5_df_from_text(text)
-                _DATA["loaded_at"] = time.time()
+                _DATA["error"] = ""
                 df = _DATA["df"]
                 print(f"[DATA] Loaded {len(df)} records "
                       f"({df[TIME_COL].min()} -> {df[TIME_COL].max()})", flush=True)
             except Exception as e:
-                # Keep serving the last good data if GitHub is temporarily unreachable
-                if _DATA["df"].empty:
-                    raise
-                print(f"[DATA] Refresh failed, keeping previous data: {e}", flush=True)
-                _DATA["loaded_at"] = time.time()   # don't retry on every request
+                _DATA["error"] = str(e)
+                print(f"[DATA] Could not load data from GitHub: {e}", flush=True)
+            _DATA["loaded_at"] = time.time()
         return _DATA["df"], _DATA["units"]
 
 
-# Initial load at import time (so gunicorn fails loudly if GitHub can't be read)
-_df0, _ = load_data(force=True)
+def no_data_message():
+    return html.Div(
+        style={"textAlign": "center", "marginTop": "40px", "color": "#555"},
+        children=[
+            html.H4("Waiting for data from GitHub"),
+            html.P(f"{GITHUB_REPO} / {FILENAME} (branch {BRANCH}) could not be read yet."),
+            html.P(_DATA["error"], style={"fontSize": "12px", "color": "#999"}),
+            html.P(f"The app re-checks every {RETRY_SECONDS_WHEN_EMPTY} s - this page updates automatically."),
+        ],
+    )
 
-# Tabs: keep only variables present in the file
-pages = {}
-for tab_name, vars_list in TABS.items():
-    present = [v for v in vars_list if v in _df0.columns]
-    missing = [v for v in vars_list if v not in _df0.columns]
-    if missing:
-        print(f"[WARN] {tab_name}: not in file, skipped -> {missing}")
-    if present:
-        pages[tab_name] = present
+
+# Initial load at startup (app still starts if GitHub/file isn't available yet)
+load_data(force=True)
+
+# Tabs are defined by TABS; variables missing from the file are skipped when plotting
+pages = dict(TABS)
 tab_names = list(pages.keys())
 
 
 # =========================
 # Setup tab (photos live in assets/setup/, served automatically by Dash)
 # =========================
-SETUP_TAB = "Setup"
+SETUP_TAB = "Site and Setup"
 
 # Page content lives in assets/setup/setup.html (edit that file, not this code)
 SETUP_PAGE = "setup/setup.html"
@@ -350,11 +409,137 @@ TAB_SELECTED_STYLE = {
 }
 
 
+QC_OPTIONS = [{"label": "All", "value": "all"}] + [
+    {"label": f"<= {g}", "value": g} for g in range(1, 10)]
+WD_OPTIONS = [{"label": "All", "value": "all"}] + [
+    {"label": k, "value": k} for k in WD_SECTORS]
+FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
+                       "marginLeft": "14px", "flexWrap": "wrap"}
+
+
+def in_sector(wd: pd.Series, sector: str) -> pd.Series:
+    lo, hi = WD_SECTORS[sector]
+    return (wd >= lo) | (wd < hi) if lo > hi else (wd >= lo) & (wd < hi)
+
+
+def filter_flux_df(df: pd.DataFrame, qc_ch4, qc_c, sector) -> pd.DataFrame:
+    """QC grade <= limit keeps the flux (worse grades set to NaN); sector keeps rows in that WD range."""
+    d = df.copy()
+    if qc_ch4 != "all" and FCH4_QC_COL in d and FCH4_COL in d:
+        d.loc[~(d[FCH4_QC_COL] <= qc_ch4), FCH4_COL] = float("nan")
+    if qc_c != "all" and FC_QC_COL in d and FC_COL in d:
+        d.loc[~(d[FC_QC_COL] <= qc_c), FC_COL] = float("nan")
+    if sector != "all" and WD_COL in d:
+        d = d[in_sector(d[WD_COL], sector)]
+    return d
+
+
+def _empty_fig(title, msg="Not enough data"):
+    f = go.Figure()
+    f.add_annotation(text=msg, x=0.5, y=0.5, xref="paper", yref="paper",
+                     showarrow=False, font=dict(color="#888"))
+    f.update_layout(title=dict(text=title, x=0.5), height=460,
+                    xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return f
+
+
+def make_wind_rose(d: pd.DataFrame) -> go.Figure:
+    title = f"Wind rose (WD + {WD_OFFSET_DEG}°)"
+    if WD_COL not in d or WS_COL not in d:
+        return _empty_fig(title)
+    x = d[[WD_COL, WS_COL]].dropna()
+    if x.empty:
+        return _empty_fig(title)
+    width = 22.5
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    sec = (((x[WD_COL] + width / 2) % 360) // width).astype(int)
+    bins = [0, 1, 2, 3, 5, float("inf")]
+    labels = ["0-1", "1-2", "2-3", "3-5", ">5"]
+    colors = ["#c6dbef", "#9ecae1", "#6baed6", "#3182bd", "#08519c"]
+    spd = pd.cut(x[WS_COL], bins=bins, labels=labels, right=False)
+    n = len(x)
+    f = go.Figure()
+    for lab, col in zip(labels, colors):
+        freq = [100 * ((sec == i) & (spd == lab)).sum() / n for i in range(16)]
+        f.add_trace(go.Barpolar(r=freq, theta=dirs, name=lab, marker_color=col,
+                                hovertemplate="%{theta}: %{r:.1f}%<extra>" + lab + " m/s</extra>"))
+    f.update_layout(
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=60, t=60, b=70),
+        legend=dict(title="Wind speed (m/s)", orientation="h", x=0.5, xanchor="center",
+                    y=-0.08, yanchor="top", font=dict(size=11)),
+        polar=dict(angularaxis=dict(direction="clockwise", rotation=90),
+                   radialaxis=dict(ticksuffix="%", angle=45, tickfont=dict(size=9))),
+    )
+    return f
+
+
+def make_fch4_vs_wd(d: pd.DataFrame) -> go.Figure:
+    title = "FCH4 vs wind direction"
+    if WD_COL not in d or FCH4_COL not in d:
+        return _empty_fig(title)
+    x = d[[WD_COL, FCH4_COL]].dropna()
+    if x.empty:
+        return _empty_fig(title)
+    y = x[FCH4_COL] / M_CH4 * 1000            # ugCH4 -> nmol
+    f = go.Figure()
+    f.add_trace(go.Scatter(x=x[WD_COL], y=y, mode="markers", name="30-min",
+                           marker=dict(size=6, color="#1f77b4", opacity=0.6),
+                           hovertemplate="WD %{x:.0f}°<br>FCH4 %{y:.1f}<extra></extra>"))
+    # sector means (22.5 deg)
+    sec = ((x[WD_COL] // 22.5) * 22.5 + 11.25)
+    m = y.groupby(sec).mean()
+    f.add_trace(go.Scatter(x=m.index, y=m.values, mode="lines+markers", name="Sector mean",
+                           line=dict(color="#d62728", width=2)))
+    f.update_layout(
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=20, t=60, b=50),
+        xaxis=dict(title="Wind direction (°)", range=[0, 360], tickvals=[0, 90, 180, 270, 360],
+                   ticktext=["0 N", "90 E", "180 S", "270 W", "360 N"]),
+        yaxis=dict(title="FCH4 (nmol m-2 s-1)"),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.7)"),
+    )
+    return f
+
+
+def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
+    title = "FCH4 vs CO2 flux (linear regression)"
+    if FCH4_COL not in d or FC_COL not in d:
+        return _empty_fig(title)
+    x = d[[FC_COL, FCH4_COL]].dropna()
+    if len(x) < 3:
+        return _empty_fig(title)
+    xc = x[FC_COL] / M_CO2 * 1000             # mgCO2 -> umol
+    yc = x[FCH4_COL] / M_CH4 * 1000           # ugCH4 -> nmol
+    slope, intercept = np.polyfit(xc, yc, 1)
+    r2 = float(np.corrcoef(xc, yc)[0, 1] ** 2)
+    xs = np.linspace(xc.min(), xc.max(), 50)
+    f = go.Figure()
+    f.add_trace(go.Scatter(x=xc, y=yc, mode="markers", name="30-min",
+                           marker=dict(size=6, color="#2ca02c", opacity=0.6),
+                           hovertemplate="FC %{x:.2f}<br>FCH4 %{y:.1f}<extra></extra>"))
+    f.add_trace(go.Scatter(x=xs, y=slope * xs + intercept, mode="lines", name="Linear fit",
+                           line=dict(color="#d62728", width=2)))
+    f.add_annotation(x=0.02, y=0.98, xref="paper", yref="paper", xanchor="left", yanchor="top",
+                     showarrow=False, align="left", bgcolor="rgba(255,255,255,0.8)",
+                     text=(f"y = {slope:.3f} x {'+' if intercept >= 0 else '-'} {abs(intercept):.3f}"
+                           f"<br>R² = {r2:.3f}, n = {len(x)}"))
+    f.update_layout(
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=20, t=60, b=50),
+        xaxis=dict(title="FC (µmol m-2 s-1)"), yaxis=dict(title="FCH4 (nmol m-2 s-1)"),
+        legend=dict(x=0.99, xanchor="right", y=0.01, yanchor="bottom",
+                    bgcolor="rgba(255,255,255,0.7)"),
+    )
+    return f
+
+
 def serve_layout():
     """Built on every page load, so the date picker always reflects the latest data."""
     df, _ = load_data()
-    min_d = df[TIME_COL].min().date()
-    max_d = df[TIME_COL].max().date()
+    if df.empty:
+        min_d = max_d = None
+    else:
+        min_d = df[TIME_COL].min().date()
+        max_d = df[TIME_COL].max().date()
 
     return html.Div(
         style={"fontFamily": "Arial", "padding": "10px"},
@@ -368,7 +553,7 @@ def serve_layout():
                     "gap": "8px",
                 },
                 children=[
-                    html.H3("TGA310 Methane Flux - CSFlux", style={"margin": "0", "textAlign": "center"}),
+                    html.H3("Cattle Methane Emission Measurement using TGA310", style={"margin": "0", "textAlign": "center"}),
                     html.Div(
                         id="range-row",
                         style={
@@ -389,6 +574,17 @@ def serve_layout():
                                 display_format="YYYY-MM-DD",
                                 clearable=True,
                             ),
+                            html.Div(id="flux-controls", style=FLUX_CONTROLS_STYLE, children=[
+                                html.Span("FCH4_QC:", style={"fontSize": "14px"}),
+                                dcc.Dropdown(id="qc-fch4", options=QC_OPTIONS, value="all",
+                                             clearable=False, style={"width": "120px"}),
+                                html.Span("FC_QC:", style={"fontSize": "14px"}),
+                                dcc.Dropdown(id="qc-fc", options=QC_OPTIONS, value="all",
+                                             clearable=False, style={"width": "120px"}),
+                                html.Span("Wind direction:", style={"fontSize": "14px"}),
+                                dcc.Dropdown(id="wd-sector", options=WD_OPTIONS, value="all",
+                                             clearable=False, style={"width": "170px"}),
+                            ]),
                         ],
                     ),
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
@@ -400,7 +596,9 @@ def serve_layout():
             ]),
             html.Div(id="tab-content", style={"marginTop": "8px"}),
             # Re-check GitHub while the page is open
-            dcc.Interval(id="refresh", interval=REFRESH_MINUTES * 60 * 1000, n_intervals=0),
+            dcc.Interval(id="refresh", n_intervals=0,
+                         interval=(RETRY_SECONDS_WHEN_EMPTY * 1000 if df.empty
+                                   else REFRESH_MINUTES * 60 * 1000)),
         ],
     )
 
@@ -423,34 +621,49 @@ RANGE_ROW_STYLE = {
 @app.callback(
     Output("range-row", "style"),
     Output("last-updated", "style"),
+    Output("flux-controls", "style"),
     Input("tabs", "value"),
 )
 def toggle_range(tab_value):
-    """Date picker isn't used on the Setup tab."""
+    """Date picker isn't used on the Setup tab; QC / WD filters only on the flux tab."""
     hidden = tab_value == SETUP_TAB
     lu = {"fontSize": "12px", "color": "#666"}
+    fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, "display": "none"}
     if hidden:
-        return {**RANGE_ROW_STYLE, "display": "none"}, {**lu, "display": "none"}
-    return RANGE_ROW_STYLE, lu
+        return {**RANGE_ROW_STYLE, "display": "none"}, {**lu, "display": "none"}, fc
+    return RANGE_ROW_STYLE, lu, fc
 
 
 @app.callback(
+    Output("dp-range", "min_date_allowed"),
     Output("dp-range", "max_date_allowed"),
+    Output("dp-range", "start_date"),
     Output("dp-range", "end_date"),
     Output("last-updated", "children"),
+    Output("refresh", "interval"),
     Input("refresh", "n_intervals"),
+    State("dp-range", "start_date"),
     State("dp-range", "end_date"),
     State("dp-range", "max_date_allowed"),
 )
-def refresh_dates(_n, end_date, old_max):
+def refresh_dates(_n, start_date, end_date, old_max):
     """Extend the picker when new data arrives; follow the latest day if user was viewing it."""
     df, _ = load_data()
+    if df.empty:
+        return (None, None, None, None, "No data yet - waiting for GitHub file",
+                RETRY_SECONDS_WHEN_EMPTY * 1000)
+
+    new_min = df[TIME_COL].min().date()
     new_max = df[TIME_COL].max().date()
     last_rec = df[TIME_COL].max().strftime("%Y-%m-%d %H:%M")
 
-    if end_date is not None and old_max is not None and str(end_date)[:10] == str(old_max)[:10]:
+    if start_date is None:                       # data just arrived
+        start_date = new_min
+    if end_date is None or (old_max is not None and str(end_date)[:10] == str(old_max)[:10]):
         end_date = new_max
-    return new_max, end_date, f"Last record: {last_rec}  ·  refreshes every {REFRESH_MINUTES} min"
+    return (new_min, new_max, start_date, end_date,
+            f"Last record: {last_rec}  ·  refreshes every {REFRESH_MINUTES} min",
+            REFRESH_MINUTES * 60 * 1000)
 
 
 @app.callback(
@@ -459,17 +672,24 @@ def refresh_dates(_n, end_date, old_max):
     Input("dp-range", "start_date"),
     Input("dp-range", "end_date"),
     Input("refresh", "n_intervals"),
+    Input("qc-fch4", "value"),
+    Input("qc-fc", "value"),
+    Input("wd-sector", "value"),
 )
-def render_tab(tab_value, start_date, end_date, _n):
+def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", sector="all"):
     if tab_value == SETUP_TAB:
         return setup_layout()
 
     df, units_map = load_data()
+    if df.empty:
+        return no_data_message()
+
     dff = filter_df_by_datepicker_range(df, start_date, end_date)
     if dff.empty:
         return html.Div("No data for selected date range.")
 
-    vars_list = pages.get(tab_value, [])
+    vars_list = [p for p in pages.get(tab_value, [])
+                 if any(v in df.columns for v in panel_vars(p))]
     if not vars_list:
         return html.Div("No variables to display in this tab.")
 
@@ -478,8 +698,33 @@ def render_tab(tab_value, start_date, end_date, _n):
     e_txt = "" if end_date is None else str(end_date)
     title_range = f"{s_txt} → {e_txt}".strip(" →")
 
-    fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
-    return dcc.Graph(figure=fig)
+    if tab_value != FLUX_TAB:
+        fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
+        return dcc.Graph(figure=fig)
+
+    # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
+    dfq = filter_flux_df(dff, qc_ch4, qc_c, sector)
+    notes = [f"FCH4_QC: {'all' if qc_ch4 == 'all' else '<= ' + str(qc_ch4)}",
+             f"FC_QC: {'all' if qc_c == 'all' else '<= ' + str(qc_c)}",
+             f"Wind direction: {sector}",
+             f"{len(dfq)} of {len(dff)} records",
+             f"valid FCH4: {int(dfq[FCH4_COL].notna().sum()) if FCH4_COL in dfq else 0}",
+             f"valid FC: {int(dfq[FC_COL].notna().sum()) if FC_COL in dfq else 0}"]
+    if dfq.empty:
+        return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
+                        style={"textAlign": "center", "marginTop": "30px"})
+
+    fig = make_grid_figure(dfq, vars_list, units_map, title_range, dtick, tickformat)
+    analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
+    return html.Div([
+        html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+        dcc.Graph(figure=fig),
+        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px"}, children=[
+            html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
+        ]),
+    ])
 
 
 # =========================
