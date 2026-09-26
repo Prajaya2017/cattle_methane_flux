@@ -299,8 +299,56 @@ MODAL_HIDDEN = {"display": "none", "position": "fixed", "top": 0, "left": 0, "wi
                 "justifyContent": "center", "alignItems": "center"}
 
 
+import re as _re
+
+_CHEM = [("CH4", "CH<sub>4</sub>"), ("CO2", "CO<sub>2</sub>"), ("H2O", "H<sub>2</sub>O"),
+         ("N2O", "N<sub>2</sub>O")]
+
+
+def fmt_units(text):
+    """Scientific formatting for Plotly text: ugCH4 -> ug CH4 with subscripts,
+    m-2 s-1 -> m^-2 s^-1 superscripts, deg C -> degC."""
+    if not isinstance(text, str) or not text or "<sup>" in text or "<sub>" in text:
+        return text
+    t = text
+    t = _re.sub(r"\bdecimal degrees\b", "\u00b0", t)
+    t = _re.sub(r"\bdeg C\b", "\u00b0C", t)
+    t = _re.sub(r"\bu(g|mol)(?=CH4|CO2|H2O|N2O)", "\u00b5\\1 ", t)      # ugCH4 -> \u00b5g CH4
+    t = _re.sub(r"\b(m|n)?(g|mol)(?=CH4|CO2|H2O|N2O)", r"\1\2 ", t)      # mgCO2 -> mg CO2
+    for a, b in _CHEM:
+        t = _re.sub(r"(?<![A-Za-z0-9_])" + a + r"(?![A-Za-z0-9])", b, t)
+    # unit exponents: m-2, s-1, m2, hour-1, kg m-1 s-2 ...
+    t = _re.sub(r"(?<![A-Za-z0-9_\-])(m|s|kg|g|hour|h|d|mol|W|J)(-?\d)(?![\d_])",
+                lambda m: m.group(1) + "<sup>" + m.group(2).replace("-", "\u2212") + "</sup>", t)
+    return t
+
+
+def prettify_fig(fig: go.Figure) -> go.Figure:
+    """Apply fmt_units to titles, axis titles, subplot titles and colorbar titles."""
+    lay = fig.layout
+    if lay.title and lay.title.text:
+        lay.title.text = fmt_units(lay.title.text)
+    for k in lay:
+        if (k.startswith("xaxis") or k.startswith("yaxis")) and lay[k].title and lay[k].title.text:
+            lay[k].title.text = fmt_units(lay[k].title.text)
+    for ann in lay.annotations or []:
+        if ann.text:
+            ann.text = fmt_units(ann.text)
+    if lay.legend and lay.legend.title and lay.legend.title.text:
+        lay.legend.title.text = fmt_units(lay.legend.title.text)
+    for tr in fig.data:
+        cb = getattr(getattr(tr, "marker", None), "colorbar", None) if hasattr(tr, "marker") else None
+        for c in (getattr(tr, "colorbar", None), cb):
+            if c is not None and c.title and c.title.text:
+                c.title.text = fmt_units(c.title.text)
+        if getattr(tr, "name", None):
+            tr.name = fmt_units(tr.name)
+    return fig
+
+
 def plot_card(fig: go.Figure, idx: int, height: int | None = None, style: dict | None = None):
     """Plot in a card with a maximize button (opens the figure in a large pop-up)."""
+    fig = prettify_fig(fig)
     h = height or (fig.layout.height or PANEL_HEIGHT_PX)
     return html.Div(style={**CARD_STYLE, **(style or {})}, children=[
         html.Div(style={"display": "flex", "justifyContent": "flex-end", "marginBottom": "2px"},
@@ -446,11 +494,11 @@ def setup_layout():
 # Layout
 # =========================
 TAB_STYLE = {
-    "padding": "6px 14px",
-    "fontSize": "18px",
+    "padding": "4px 12px",
+    "fontSize": "14px",
     "fontWeight": "bold",
-    "height": "42px",
-    "lineHeight": "28px",
+    "height": "34px",
+    "lineHeight": "24px",
     "border": "1px solid #cfe0d8",
     "borderBottom": "none",
     "borderRadius": "12px 12px 0 0",
