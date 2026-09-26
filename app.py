@@ -19,6 +19,7 @@ import os
 os.environ["DASH_JUPYTER_MODE"] = "_none"
 
 import math
+import re
 import threading
 import time
 from io import StringIO
@@ -209,6 +210,48 @@ def format_title(var: str, units_map: dict[str, str]) -> str:
     if u is None or pd.isna(u) or str(u).strip() == "":
         return var
     return f"{var} ({str(u).strip()})"
+
+
+def pretty_label(text: str) -> str:
+    """Plotly HTML for chemical formulas and units, e.g.
+    'FCH4_mass (ugCH4 m-2 s-1)' -> 'FCH<sub>4</sub>_mass (µg CH<sub>4</sub> m<sup>−2</sup> s<sup>−1</sup>)'."""
+    if not text or "<sub>" in text or "<sup>" in text:
+        return text
+    t = text.replace("deg C", "°C").replace("decimal degrees", "°")
+    t = re.sub(r"(?<![A-Za-z])u(?=g|mol)", "µ", t)                                   # ug, umol
+    t = re.sub(r"(?<![A-Za-z])(µ?g|mg|n?mol|µmol|mmol)(CH4|CO2|H2O)", r"\1 \2", t)  # ugCH4 -> ug CH4
+    t = re.sub(r"CH4", "CH<sub>4</sub>", t)
+    t = re.sub(r"CO2", "CO<sub>2</sub>", t)
+    t = re.sub(r"H2O", "H<sub>2</sub>O", t)
+    t = re.sub(r"(?<![A-Za-z0-9_])(m|s|hour|mol)(-?)(\d)(?![\dA-Za-z_])",
+               lambda m: f"{m[1]}<sup>{'−' if m[2] else ''}{m[3]}</sup>", t)          # m-2 -> m<sup>−2</sup>
+    return t
+
+
+def fix_labels(fig: go.Figure) -> go.Figure:
+    """Apply pretty_label to the title, subplot titles, axis titles and colorbar titles."""
+    lay = fig.layout
+    if lay.title and lay.title.text:
+        lay.title.text = pretty_label(lay.title.text)
+    for a in lay.annotations or []:
+        if a.text:
+            a.text = pretty_label(a.text)
+    for name in list(lay):
+        if name.startswith(("xaxis", "yaxis")) and lay[name].title and lay[name].title.text:
+            lay[name].title.text = pretty_label(lay[name].title.text)
+    for tr in fig.data:
+        cb = getattr(tr, "colorbar", None)
+        if cb is not None and cb.title and cb.title.text:
+            cb.title.text = pretty_label(cb.title.text)
+    return fig
+
+
+def plot_box(fig: go.Figure, style=None) -> html.Div:
+    """Graph with a maximize button (behaviour in assets/maximize.js)."""
+    return html.Div(className="plot-box", style=style, children=[
+        html.Button("⛶", className="max-btn", title="Maximize", n_clicks=0),
+        dcc.Graph(figure=fix_labels(fig), config={"responsive": True}),
+    ])
 
 
 def filter_df_by_datepicker_range(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
@@ -908,12 +951,12 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         fig = make_grid_figure(dfm, vars_list, units_map, title_range, dtick, tickformat)
         return html.Div([
             html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-            dcc.Graph(figure=fig),
+            plot_box(fig),
         ])
 
     if tab_value != FLUX_TAB:
         fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
-        return dcc.Graph(figure=fig)
+        return plot_box(fig)
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
@@ -932,14 +975,14 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
         html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-        dcc.Graph(figure=fig),
+        plot_box(fig),
         html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px"}, children=[
-            html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_dir_hour_heatmap(dfq)), style=analysis_style),
+            plot_box(make_wind_rose(dfq), style=analysis_style),
+            plot_box(make_fch4_vs_wd(dfq), style=analysis_style),
+            plot_box(make_fch4_fc_regression(dfq), style=analysis_style),
+            plot_box(make_dir_hour_heatmap(dfq), style=analysis_style),
         ]),
-        dcc.Graph(figure=make_diurnal(dfq)),
+        plot_box(make_diurnal(dfq)),
     ])
 
 
