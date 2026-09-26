@@ -447,10 +447,10 @@ def setup_layout():
 # =========================
 TAB_STYLE = {
     "padding": "6px 14px",
-    "fontSize": "26px",
+    "fontSize": "18px",
     "fontWeight": "bold",
-    "height": "54px",
-    "lineHeight": "40px",
+    "height": "42px",
+    "lineHeight": "28px",
     "border": "1px solid #cfe0d8",
     "borderBottom": "none",
     "borderRadius": "12px 12px 0 0",
@@ -764,7 +764,7 @@ def serve_layout():
                 },
                 children=[
                     html.H1("TGA310 Cattle CH\u2084 Emission Measurement", style={
-                        "margin": "4px 0 2px", "textAlign": "center", "fontSize": "34px",
+                        "margin": "4px 0 2px", "textAlign": "center", "fontSize": "24px",
                         "fontWeight": "800", "color": "#1b4d3e", "letterSpacing": "0.3px"}),
                     html.Div(
                         id="range-row",
