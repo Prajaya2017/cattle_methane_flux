@@ -87,6 +87,16 @@ FLUX_TAB = "Fluxes and Turbulence"
 MET_TAB = "Meteorology"
 FCH4_COL, FCH4_QC_COL = "FCH4_mass", "FCH4_QC"     # ugCH4 m-2 s-1
 FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
+LE_COL, LE_QC_COL = "LE", "LE_QC"                   # W m-2
+H_COL, H_QC_COL = "H", "H_QC"                       # W m-2
+
+# QC dropdowns on the flux tab: (dropdown id, label, flux column, QC column)
+QC_FILTERS = [
+    ("qc-fch4", "FCH4_QC", FCH4_COL, FCH4_QC_COL),
+    ("qc-fc", "FC_QC", FC_COL, FC_QC_COL),
+    ("qc-le", "LE_QC", LE_COL, LE_QC_COL),
+    ("qc-h", "H_QC", H_COL, H_QC_COL),
+]
 M_CH4, M_CO2 = 16.04, 44.01                        # g mol-1
 
 # Wind direction filter (degrees, after offset). N wraps around 0.
@@ -472,13 +482,13 @@ def sectors_label(sectors) -> str:
     return ", ".join(k.split()[0] for k in order)
 
 
-def filter_flux_df(df: pd.DataFrame, qc_ch4, qc_c, sector) -> pd.DataFrame:
-    """QC grade <= limit keeps the flux (worse grades set to NaN); sector keeps rows in that WD range."""
+def filter_flux_df(df: pd.DataFrame, qc_limits, sector) -> pd.DataFrame:
+    """For each flux, QC grade <= limit keeps the value (worse grades set to NaN);
+    sector keeps only the selected wind directions."""
     d = df.copy()
-    if qc_ch4 != "all" and FCH4_QC_COL in d and FCH4_COL in d:
-        d.loc[~(d[FCH4_QC_COL] <= qc_ch4), FCH4_COL] = float("nan")
-    if qc_c != "all" and FC_QC_COL in d and FC_COL in d:
-        d.loc[~(d[FC_QC_COL] <= qc_c), FC_COL] = float("nan")
+    for (_id, _lab, col, qc_col), lim in zip(QC_FILTERS, qc_limits):
+        if lim not in (None, "all") and col in d and qc_col in d:
+            d.loc[~(d[qc_col] <= lim), col] = float("nan")
     return filter_wd(d, sector)
 
 
@@ -623,12 +633,11 @@ def serve_layout():
                                 clearable=True,
                             ),
                             html.Div(id="flux-controls", style=FLUX_CONTROLS_STYLE, children=[
-                                html.Span("FCH4_QC:", style={"fontSize": "14px"}),
-                                dcc.Dropdown(id="qc-fch4", options=QC_OPTIONS, value="all",
-                                             clearable=False, style={"width": "120px"}),
-                                html.Span("FC_QC:", style={"fontSize": "14px"}),
-                                dcc.Dropdown(id="qc-fc", options=QC_OPTIONS, value="all",
-                                             clearable=False, style={"width": "120px"}),
+                                *[el for qid, lab, _c, _q in QC_FILTERS for el in (
+                                    html.Span(f"{lab}:", style={"fontSize": "14px"}),
+                                    dcc.Dropdown(id=qid, options=QC_OPTIONS, value="all",
+                                                 clearable=False, style={"width": "100px"}),
+                                )],
                             ]),
                             html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
@@ -758,11 +767,11 @@ def refresh_dates(_n, start_date, end_date, old_max):
     Input("dp-range", "start_date"),
     Input("dp-range", "end_date"),
     Input("refresh", "n_intervals"),
-    Input("qc-fch4", "value"),
-    Input("qc-fc", "value"),
+    *[Input(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
     Input("wd-sector", "value"),
 )
-def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", sector=None):
+def render_tab(tab_value, start_date, end_date, _n, *args):
+    qc_limits, sector = list(args[:len(QC_FILTERS)]), (args[len(QC_FILTERS)] if len(args) > len(QC_FILTERS) else None)
     if tab_value == SETUP_TAB:
         return setup_layout()
 
@@ -801,13 +810,13 @@ def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", se
         return dcc.Graph(figure=fig)
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
-    dfq = filter_flux_df(dff, qc_ch4, qc_c, sector)
-    notes = [f"FCH4_QC: {'all' if qc_ch4 == 'all' else '<= ' + str(qc_ch4)}",
-             f"FC_QC: {'all' if qc_c == 'all' else '<= ' + str(qc_c)}",
+    dfq = filter_flux_df(dff, qc_limits, sector)
+    notes = [f"{lab}: {'all' if lim in (None, 'all') else '<= ' + str(lim)}"
+             for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
              f"Wind direction: {sectors_label(sector)}",
              f"{n_records(dfq)} of {len(dff)} records",
-             f"valid FCH4: {int(dfq[FCH4_COL].notna().sum()) if FCH4_COL in dfq else 0}",
-             f"valid FC: {int(dfq[FC_COL].notna().sum()) if FC_COL in dfq else 0}"]
+             "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
+                                  for _i, lab, c, _q in QC_FILTERS)]
     if n_records(dfq) == 0:
         return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
                         style={"textAlign": "center", "marginTop": "30px"})
