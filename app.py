@@ -90,6 +90,15 @@ FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
 LE_COL, LE_QC_COL = "LE", "LE_QC"                   # W m-2
 H_COL, H_QC_COL = "H", "H_QC"                       # W m-2
 
+USTAR_COL = "USTAR"
+USTAR_OPTIONS = [{"label": "None", "value": "none"},
+                 {"label": ">= 0.1 m/s", "value": 0.1},
+                 {"label": ">= 0.2 m/s", "value": 0.2}]
+ET_COL = "ET"
+CH4_CONC_COL = "CH4_mixratio"          # nmol mol-1 (ppb)
+CO2_DENS_COL = "CO2_density"           # mg m-3 -> converted to ppm with TA and PA
+TA_COL, PA_COL = "TA_1_1_1", "PA"      # deg C, kPa
+
 # QC dropdowns on the flux tab: (dropdown id, label, flux column, QC column)
 QC_FILTERS = [
     ("qc-fch4", "FCH4_QC", FCH4_COL, FCH4_QC_COL),
@@ -482,13 +491,17 @@ def sectors_label(sectors) -> str:
     return ", ".join(k.split()[0] for k in order)
 
 
-def filter_flux_df(df: pd.DataFrame, qc_limits, sector) -> pd.DataFrame:
+def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.DataFrame:
     """For each flux, QC grade <= limit keeps the value (worse grades set to NaN);
+    u* filter blanks all fluxes when USTAR < threshold (weak turbulence);
     sector keeps only the selected wind directions."""
     d = df.copy()
     for (_id, _lab, col, qc_col), lim in zip(QC_FILTERS, qc_limits):
         if lim not in (None, "all") and col in d and qc_col in d:
             d.loc[~(d[qc_col] <= lim), col] = float("nan")
+    if ustar not in (None, "none") and USTAR_COL in d:
+        flux_cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "TAU", "Bowen_ratio"] if c in d]
+        d.loc[~(d[USTAR_COL] >= float(ustar)), flux_cols] = float("nan")
     return filter_wd(d, sector)
 
 
@@ -590,6 +603,126 @@ def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
     return f
 
 
+SECT16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+          "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+SECT8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+
+def _sector_index(wd: pd.Series, n: int) -> pd.Series:
+    w = 360 / n
+    return (((wd + w / 2) % 360) // w).astype(int)
+
+
+def co2_ppm(d: pd.DataFrame) -> pd.Series:
+    """CO2 mole fraction (umol mol-1, wet air) from density (mg m-3), air temperature and pressure."""
+    if not all(c in d for c in (CO2_DENS_COL, TA_COL, PA_COL)):
+        return pd.Series(dtype=float)
+    n_air = d[PA_COL] * 1000 / (8.314 * (d[TA_COL] + 273.15))          # mol m-3
+    return d[CO2_DENS_COL] / M_CO2 / n_air * 1000                          # umol mol-1
+
+
+def make_concentration_rose(wd: pd.Series, conc: pd.Series, title: str, unit: str,
+                            colorscale: str) -> go.Figure:
+    x = pd.DataFrame({"wd": wd, "c": conc}).dropna()
+    if len(x) < 3:
+        return _empty_fig(title)
+    sec = _sector_index(x["wd"], 16)
+    g = x.groupby(sec)["c"].agg(["mean", "count"]).reindex(range(16))
+    vals = g["mean"]
+    lo, hi = np.nanmin(vals), np.nanmax(vals)
+    pad = max((hi - lo) * 0.15, 1e-6)
+    f = go.Figure(go.Barpolar(
+        r=vals, theta=[i * 22.5 for i in range(16)], width=[20] * 16,
+        marker=dict(color=vals, colorscale=colorscale, cmin=lo, cmax=hi,
+                    colorbar=dict(title=unit, thickness=12, len=0.7)),
+        customdata=g["count"].fillna(0).astype(int),
+        text=SECT16,
+        hovertemplate="%{text}: %{r:.1f} " + unit + "<br>n = %{customdata}<extra></extra>",
+    ))
+    f.update_layout(
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=50, r=50, t=60, b=40),
+        polar=dict(angularaxis=dict(direction="clockwise", rotation=90, tickmode="array",
+                                    tickvals=[i * 22.5 for i in range(16)], ticktext=SECT16),
+                   radialaxis=dict(range=[lo - pad, hi + pad], tickfont=dict(size=9), angle=45)),
+        showlegend=False,
+    )
+    return f
+
+
+def make_ch4_conc_rose(d):
+    return make_concentration_rose(d.get(WD_COL, pd.Series(dtype=float)),
+                                   d.get(CH4_CONC_COL, pd.Series(dtype=float)),
+                                   "CH4 concentration rose (mean by direction)", "ppb", "YlOrRd")
+
+
+def make_co2_conc_rose(d):
+    return make_concentration_rose(d.get(WD_COL, pd.Series(dtype=float)), co2_ppm(d),
+                                   "CO2 concentration rose (mean by direction)", "ppm", "Blues")
+
+
+def make_dir_hour_heatmap(d: pd.DataFrame) -> go.Figure:
+    title = "FCH4 by wind direction × time of day"
+    if WD_COL not in d or FCH4_COL not in d:
+        return _empty_fig(title)
+    x = d[[TIME_COL, WD_COL, FCH4_COL]].dropna()
+    if len(x) < 3:
+        return _empty_fig(title)
+    x = x.assign(sec=_sector_index(x[WD_COL], 8), hr=x[TIME_COL].dt.hour,
+                 f=x[FCH4_COL] / M_CH4 * 1000)
+    piv = x.pivot_table(index="sec", columns="hr", values="f", aggfunc="mean").reindex(
+        index=range(8), columns=range(24))
+    cnt = x.pivot_table(index="sec", columns="hr", values="f", aggfunc="count").reindex(
+        index=range(8), columns=range(24)).fillna(0).astype(int)
+    lim = float(np.nanpercentile(np.abs(piv.values), 95)) if np.isfinite(piv.values).any() else 1
+    f = go.Figure(go.Heatmap(
+        z=piv.values, x=list(range(24)), y=SECT8, customdata=cnt.values,
+        colorscale="RdBu_r", zmid=0, zmin=-lim, zmax=lim,
+        colorbar=dict(title="nmol m-2 s-1", thickness=12),
+        hovertemplate="%{y}, %{x}:00<br>FCH4 %{z:.1f}<br>n = %{customdata}<extra></extra>",
+    ))
+    f.update_layout(
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=50, r=20, t=60, b=50),
+        xaxis=dict(title="Hour of day", dtick=3), yaxis=dict(title="Wind direction"),
+    )
+    return f
+
+
+DIURNAL_VARS = [  # (column, label, factor, unit)
+    (FCH4_COL, "FCH4", 1000 / M_CH4, "nmol m-2 s-1"),
+    (FC_COL, "FC", 1000 / M_CO2, "µmol m-2 s-1"),
+    (LE_COL, "LE", 1, "W m-2"),
+    (H_COL, "H", 1, "W m-2"),
+]
+
+
+def make_diurnal(d: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(rows=1, cols=len(DIURNAL_VARS), horizontal_spacing=0.06,
+                        subplot_titles=[f"{lab} ({u})" for _c, lab, _k, u in DIURNAL_VARS])
+    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
+    hod = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
+    for i, (col, lab, k, _u) in enumerate(DIURNAL_VARS, start=1):
+        if col not in d:
+            continue
+        g = (d[col] * k).groupby(hod).agg(["mean", "std", "count"])
+        g = g[g["count"] > 0]
+        if g.empty:
+            continue
+        up, dn = g["mean"] + g["std"].fillna(0), g["mean"] - g["std"].fillna(0)
+        c = colors[(i - 1) % len(colors)]
+        fig.add_trace(go.Scatter(x=list(g.index) + list(g.index[::-1]), y=list(up) + list(dn[::-1]),
+                                 fill="toself", fillcolor=c, opacity=0.18, line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False), row=1, col=i)
+        fig.add_trace(go.Scatter(x=g.index, y=g["mean"], mode="lines+markers", line=dict(color=c),
+                                 marker=dict(size=4), customdata=g["count"], showlegend=False,
+                                 hovertemplate="%{x:.1f} h<br>mean %{y:.2f}<br>n = %{customdata}"
+                                               "<extra>" + lab + "</extra>"), row=1, col=i)
+        fig.update_xaxes(range=[0, 24], dtick=6, title_text="Hour of day", row=1, col=i)
+    fig.update_layout(title=dict(text="Diurnal cycle (mean ± 1 SD)", x=0.5), height=380,
+                      margin=dict(l=40, r=20, t=80, b=50))
+    fig.update_annotations(font=dict(size=13))
+    return fig
+
+
 def serve_layout():
     """Built on every page load, so the date picker always reflects the latest data."""
     df, _ = load_data()
@@ -638,6 +771,9 @@ def serve_layout():
                                     dcc.Dropdown(id=qid, options=QC_OPTIONS, value="all",
                                                  clearable=False, style={"width": "100px"}),
                                 )],
+                                html.Span("u*:", style={"fontSize": "14px", "marginLeft": "6px"}),
+                                dcc.Dropdown(id="ustar-filter", options=USTAR_OPTIONS, value="none",
+                                             clearable=False, style={"width": "120px"}),
                             ]),
                             html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
@@ -769,9 +905,13 @@ def refresh_dates(_n, start_date, end_date, old_max):
     Input("refresh", "n_intervals"),
     *[Input(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
     Input("wd-sector", "value"),
+    Input("ustar-filter", "value"),
 )
 def render_tab(tab_value, start_date, end_date, _n, *args):
-    qc_limits, sector = list(args[:len(QC_FILTERS)]), (args[len(QC_FILTERS)] if len(args) > len(QC_FILTERS) else None)
+    nq = len(QC_FILTERS)
+    qc_limits = list(args[:nq])
+    sector = args[nq] if len(args) > nq else None
+    ustar = args[nq + 1] if len(args) > nq + 1 else "none"
     if tab_value == SETUP_TAB:
         return setup_layout()
 
@@ -810,9 +950,10 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         return dcc.Graph(figure=fig)
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
-    dfq = filter_flux_df(dff, qc_limits, sector)
+    dfq = filter_flux_df(dff, qc_limits, sector, ustar)
     notes = [f"{lab}: {'all' if lim in (None, 'all') else '<= ' + str(lim)}"
              for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
+             f"u*: {'none' if ustar in (None, 'none') else '>= ' + str(ustar) + ' m/s'}",
              f"Wind direction: {sectors_label(sector)}",
              f"{n_records(dfq)} of {len(dff)} records",
              "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
@@ -830,7 +971,11 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
             html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
             html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
             html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_ch4_conc_rose(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_co2_conc_rose(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_dir_hour_heatmap(dfq)), style=analysis_style),
         ]),
+        dcc.Graph(figure=make_diurnal(dfq)),
     ])
 
 
