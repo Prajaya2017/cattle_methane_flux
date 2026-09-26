@@ -95,9 +95,6 @@ USTAR_OPTIONS = [{"label": "None", "value": "none"},
                  {"label": ">= 0.1 m/s", "value": 0.1},
                  {"label": ">= 0.2 m/s", "value": 0.2}]
 ET_COL = "ET"
-CH4_CONC_COL = "CH4_mixratio"          # nmol mol-1 (ppb)
-CO2_DENS_COL = "CO2_density"           # mg m-3 -> converted to ppm with TA and PA
-TA_COL, PA_COL = "TA_1_1_1", "PA"      # deg C, kPa
 
 # QC dropdowns on the flux tab: (dropdown id, label, flux column, QC column)
 QC_FILTERS = [
@@ -515,7 +512,7 @@ def _empty_fig(title, msg="Not enough data"):
 
 
 def make_wind_rose(d: pd.DataFrame) -> go.Figure:
-    title = f"Wind rose (WD + {WD_OFFSET_DEG}°)"
+    title = "Wind rose"
     if WD_COL not in d or WS_COL not in d:
         return _empty_fig(title)
     x = d[[WD_COL, WS_COL]].dropna()
@@ -603,61 +600,12 @@ def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
     return f
 
 
-SECT16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-          "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 SECT8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 
 def _sector_index(wd: pd.Series, n: int) -> pd.Series:
     w = 360 / n
     return (((wd + w / 2) % 360) // w).astype(int)
-
-
-def co2_ppm(d: pd.DataFrame) -> pd.Series:
-    """CO2 mole fraction (umol mol-1, wet air) from density (mg m-3), air temperature and pressure."""
-    if not all(c in d for c in (CO2_DENS_COL, TA_COL, PA_COL)):
-        return pd.Series(dtype=float)
-    n_air = d[PA_COL] * 1000 / (8.314 * (d[TA_COL] + 273.15))          # mol m-3
-    return d[CO2_DENS_COL] / M_CO2 / n_air * 1000                          # umol mol-1
-
-
-def make_concentration_rose(wd: pd.Series, conc: pd.Series, title: str, unit: str,
-                            colorscale: str) -> go.Figure:
-    x = pd.DataFrame({"wd": wd, "c": conc}).dropna()
-    if len(x) < 3:
-        return _empty_fig(title)
-    sec = _sector_index(x["wd"], 16)
-    g = x.groupby(sec)["c"].agg(["mean", "count"]).reindex(range(16))
-    vals = g["mean"]
-    lo, hi = np.nanmin(vals), np.nanmax(vals)
-    pad = max((hi - lo) * 0.15, 1e-6)
-    f = go.Figure(go.Barpolar(
-        r=vals, theta=[i * 22.5 for i in range(16)], width=[20] * 16,
-        marker=dict(color=vals, colorscale=colorscale, cmin=lo, cmax=hi,
-                    colorbar=dict(title=unit, thickness=12, len=0.7)),
-        customdata=g["count"].fillna(0).astype(int),
-        text=SECT16,
-        hovertemplate="%{text}: %{r:.1f} " + unit + "<br>n = %{customdata}<extra></extra>",
-    ))
-    f.update_layout(
-        title=dict(text=title, x=0.5), height=460, margin=dict(l=50, r=50, t=60, b=40),
-        polar=dict(angularaxis=dict(direction="clockwise", rotation=90, tickmode="array",
-                                    tickvals=[i * 22.5 for i in range(16)], ticktext=SECT16),
-                   radialaxis=dict(range=[lo - pad, hi + pad], tickfont=dict(size=9), angle=45)),
-        showlegend=False,
-    )
-    return f
-
-
-def make_ch4_conc_rose(d):
-    return make_concentration_rose(d.get(WD_COL, pd.Series(dtype=float)),
-                                   d.get(CH4_CONC_COL, pd.Series(dtype=float)),
-                                   "CH4 concentration rose (mean by direction)", "ppb", "YlOrRd")
-
-
-def make_co2_conc_rose(d):
-    return make_concentration_rose(d.get(WD_COL, pd.Series(dtype=float)), co2_ppm(d),
-                                   "CO2 concentration rose (mean by direction)", "ppm", "Blues")
 
 
 def make_dir_hour_heatmap(d: pd.DataFrame) -> go.Figure:
@@ -695,30 +643,48 @@ DIURNAL_VARS = [  # (column, label, factor, unit)
 ]
 
 
+def _rgba(hex_color: str, a: float) -> str:
+    h = hex_color.lstrip("#")
+    return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{a})"
+
+
 def make_diurnal(d: pd.DataFrame) -> go.Figure:
+    """Mean by time of day (30-min bins) with a shaded +/- 1 standard deviation band."""
     fig = make_subplots(rows=1, cols=len(DIURNAL_VARS), horizontal_spacing=0.06,
                         subplot_titles=[f"{lab} ({u})" for _c, lab, _k, u in DIURNAL_VARS])
     colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
     hod = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
+    first = True
     for i, (col, lab, k, _u) in enumerate(DIURNAL_VARS, start=1):
         if col not in d:
             continue
         g = (d[col] * k).groupby(hod).agg(["mean", "std", "count"])
-        g = g[g["count"] > 0]
+        g = g[g["count"] > 0].sort_index()
         if g.empty:
             continue
-        up, dn = g["mean"] + g["std"].fillna(0), g["mean"] - g["std"].fillna(0)
+        sd = g["std"].fillna(0)
+        up, dn = g["mean"] + sd, g["mean"] - sd
         c = colors[(i - 1) % len(colors)]
-        fig.add_trace(go.Scatter(x=list(g.index) + list(g.index[::-1]), y=list(up) + list(dn[::-1]),
-                                 fill="toself", fillcolor=c, opacity=0.18, line=dict(width=0),
-                                 hoverinfo="skip", showlegend=False), row=1, col=i)
-        fig.add_trace(go.Scatter(x=g.index, y=g["mean"], mode="lines+markers", line=dict(color=c),
-                                 marker=dict(size=4), customdata=g["count"], showlegend=False,
-                                 hovertemplate="%{x:.1f} h<br>mean %{y:.2f}<br>n = %{customdata}"
-                                               "<extra>" + lab + "</extra>"), row=1, col=i)
+        # shaded SD band: upper edge, then lower edge filled up to it
+        fig.add_trace(go.Scatter(x=g.index, y=up, mode="lines", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False, legendgroup="sd"),
+                      row=1, col=i)
+        fig.add_trace(go.Scatter(x=g.index, y=dn, mode="lines", line=dict(width=0),
+                                 fill="tonexty", fillcolor=_rgba(c, 0.25),
+                                 name="± 1 SD", legendgroup="sd", showlegend=first,
+                                 hoverinfo="skip"), row=1, col=i)
+        fig.add_trace(go.Scatter(x=g.index, y=g["mean"], mode="lines+markers",
+                                 line=dict(color=c, width=2), marker=dict(size=4),
+                                 name="Mean", legendgroup="mean", showlegend=first,
+                                 customdata=np.stack([sd, g["count"]], axis=-1),
+                                 hovertemplate="%{x:.1f} h<br>mean %{y:.2f}<br>SD %{customdata[0]:.2f}"
+                                               "<br>n = %{customdata[1]}<extra>" + lab + "</extra>"),
+                      row=1, col=i)
         fig.update_xaxes(range=[0, 24], dtick=6, title_text="Hour of day", row=1, col=i)
-    fig.update_layout(title=dict(text="Diurnal cycle (mean ± 1 SD)", x=0.5), height=380,
-                      margin=dict(l=40, r=20, t=80, b=50))
+        first = False
+    fig.update_layout(title=dict(text="Diurnal cycle (mean ± 1 SD)", x=0.5), height=400,
+                      margin=dict(l=40, r=20, t=90, b=50),
+                      legend=dict(orientation="h", x=1, xanchor="right", y=1.12, yanchor="bottom"))
     fig.update_annotations(font=dict(size=13))
     return fig
 
@@ -971,8 +937,6 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
             html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
             html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
             html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_ch4_conc_rose(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_co2_conc_rose(dfq)), style=analysis_style),
             html.Div(dcc.Graph(figure=make_dir_hour_heatmap(dfq)), style=analysis_style),
         ]),
         dcc.Graph(figure=make_diurnal(dfq)),
