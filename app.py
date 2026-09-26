@@ -41,6 +41,8 @@ GITHUB_REPO = "Prajaya2017/cattle_methane_flux"
 BRANCH = "main"
 FILENAME = "Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME}"
+# Direct file download: not subject to the GitHub API rate limit (60 requests/hour per IP)
+GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{FILENAME}"
 
 # How often to re-download data from GitHub (minutes)
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))
@@ -110,9 +112,19 @@ def _looks_like_toa5(text: str) -> bool:
 
 
 def fetch_toa5_text_from_github() -> str:
-    # Public repo: no token / login used
-    headers = {"Accept": "application/vnd.github.raw"}
-    r = requests.get(GITHUB_API_URL, headers=headers, params={"ref": BRANCH}, timeout=60)
+    """
+    Download the data file from the public repo via raw.githubusercontent.com
+    (no API rate limit, no login). If a GITHUB_TOKEN environment variable is set on
+    Render, the authenticated API (5,000 requests/hour) is used as a fallback.
+    """
+    r = requests.get(GITHUB_RAW_URL, params={"t": int(time.time() // 60)},  # bust CDN cache ~1 min
+                     headers={"Cache-Control": "no-cache"}, timeout=60)
+
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if r.status_code != 200 and token:
+        r = requests.get(GITHUB_API_URL, params={"ref": BRANCH}, timeout=60,
+                         headers={"Accept": "application/vnd.github.raw",
+                                  "Authorization": f"Bearer {token}"})
 
     if r.status_code == 404:
         raise RuntimeError(
@@ -121,10 +133,7 @@ def fetch_toa5_text_from_github() -> str:
         )
 
     if r.status_code != 200:
-        try:
-            raise RuntimeError(f"GitHub fetch failed ({r.status_code}): {r.json()}")
-        except ValueError:
-            raise RuntimeError(f"GitHub fetch failed ({r.status_code}): {r.text[:300]}")
+        raise RuntimeError(f"GitHub fetch failed ({r.status_code}): {r.text[:300]}")
 
     text = r.text
     if not _looks_like_toa5(text):
@@ -739,7 +748,7 @@ def refresh_dates(_n, start_date, end_date, old_max):
     if end_date is None or (old_max is not None and str(end_date)[:10] == str(old_max)[:10]):
         end_date = new_max
     return (new_min, new_max, start_date, end_date,
-            f"Last record: {last_rec}  ·  refreshes every {REFRESH_MINUTES} min",
+            f"Last record: {last_rec}",
             REFRESH_MINUTES * 60 * 1000)
 
 
