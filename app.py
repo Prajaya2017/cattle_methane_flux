@@ -82,6 +82,7 @@ WD_OFFSET_DEG = 180
 WS_COL = "WS"
 
 FLUX_TAB = "Fluxes and Turbulence"
+MET_TAB = "Meteorology"
 FCH4_COL, FCH4_QC_COL = "FCH4_mass", "FCH4_QC"     # ugCH4 m-2 s-1
 FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
 M_CH4, M_CO2 = 16.04, 44.01                        # g mol-1
@@ -275,7 +276,8 @@ def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) ->
                 go.Scatter(
                     x=df[TIME_COL],
                     y=df[col],
-                    mode="lines",
+                    mode="lines+markers",
+                    marker=dict(size=3, color=color) if color else dict(size=3),
                     name=lab,
                     showlegend=show,
                     line=dict(color=color) if color else None,
@@ -411,15 +413,54 @@ TAB_SELECTED_STYLE = {
 
 QC_OPTIONS = [{"label": "All", "value": "all"}] + [
     {"label": f"<= {g}", "value": g} for g in range(1, 10)]
-WD_OPTIONS = [{"label": "All", "value": "all"}] + [
-    {"label": k, "value": k} for k in WD_SECTORS]
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "14px", "flexWrap": "wrap"}
+WD_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
+                     "marginLeft": "14px"}
+WD_SUMMARY_STYLE = {"cursor": "pointer", "listStyle": "none", "border": "1px solid #ccc",
+                    "borderRadius": "4px", "padding": "6px 10px", "minWidth": "150px",
+                    "fontSize": "14px", "backgroundColor": "white", "userSelect": "none"}
+WD_PANEL_STYLE = {"position": "absolute", "top": "38px", "left": "0", "zIndex": 1000,
+                  "backgroundColor": "white", "border": "1px solid #ccc", "borderRadius": "4px",
+                  "boxShadow": "0 4px 12px rgba(0,0,0,0.15)", "padding": "8px 12px",
+                  "minWidth": "190px"}
+WD_BTN_STYLE = {"fontSize": "12px", "padding": "2px 8px", "cursor": "pointer"}
 
 
 def in_sector(wd: pd.Series, sector: str) -> pd.Series:
     lo, hi = WD_SECTORS[sector]
     return (wd >= lo) | (wd < hi) if lo > hi else (wd >= lo) & (wd < hi)
+
+
+def all_sectors(sectors) -> bool:
+    """No selection or every box ticked = no wind-direction filter."""
+    return not sectors or sectors == "all" or set(sectors) >= set(WD_SECTORS)
+
+
+def filter_wd(df: pd.DataFrame, sectors) -> pd.DataFrame:
+    """Blank (NaN) every value outside the selected directions, keeping timestamps so
+    time-series plots show gaps instead of joining across removed periods."""
+    if all_sectors(sectors) or WD_COL not in df:
+        return df
+    keep = pd.Series(False, index=df.index)
+    for sec in sectors:
+        keep |= in_sector(df[WD_COL], sec)
+    d = df.copy()
+    cols = [c for c in d.columns if c != TIME_COL]
+    d.loc[~keep, cols] = float("nan")
+    return d
+
+
+def n_records(df: pd.DataFrame) -> int:
+    """Records that survived the wind-direction filter."""
+    return int(df.drop(columns=[TIME_COL]).notna().any(axis=1).sum())
+
+
+def sectors_label(sectors) -> str:
+    if all_sectors(sectors):
+        return "All"
+    order = [k for k in WD_SECTORS if k in sectors]
+    return ", ".join(k.split()[0] for k in order)
 
 
 def filter_flux_df(df: pd.DataFrame, qc_ch4, qc_c, sector) -> pd.DataFrame:
@@ -429,9 +470,7 @@ def filter_flux_df(df: pd.DataFrame, qc_ch4, qc_c, sector) -> pd.DataFrame:
         d.loc[~(d[FCH4_QC_COL] <= qc_ch4), FCH4_COL] = float("nan")
     if qc_c != "all" and FC_QC_COL in d and FC_COL in d:
         d.loc[~(d[FC_QC_COL] <= qc_c), FC_COL] = float("nan")
-    if sector != "all" and WD_COL in d:
-        d = d[in_sector(d[WD_COL], sector)]
-    return d
+    return filter_wd(d, sector)
 
 
 def _empty_fig(title, msg="Not enough data"):
@@ -581,9 +620,29 @@ def serve_layout():
                                 html.Span("FC_QC:", style={"fontSize": "14px"}),
                                 dcc.Dropdown(id="qc-fc", options=QC_OPTIONS, value="all",
                                              clearable=False, style={"width": "120px"}),
+                            ]),
+                            html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
-                                dcc.Dropdown(id="wd-sector", options=WD_OPTIONS, value="all",
-                                             clearable=False, style={"width": "170px"}),
+                                html.Details(style={"position": "relative"}, children=[
+                                    html.Summary(id="wd-summary", children="All ▾",
+                                                 style=WD_SUMMARY_STYLE),
+                                    html.Div(style=WD_PANEL_STYLE, children=[
+                                        html.Div(style={"display": "flex", "gap": "6px",
+                                                        "marginBottom": "6px"}, children=[
+                                            html.Button("Select all", id="wd-all", n_clicks=0,
+                                                        style=WD_BTN_STYLE),
+                                            html.Button("Clear", id="wd-none", n_clicks=0,
+                                                        style=WD_BTN_STYLE),
+                                        ]),
+                                        dcc.Checklist(
+                                            id="wd-sector",
+                                            options=[{"label": " " + k, "value": k} for k in WD_SECTORS],
+                                            value=list(WD_SECTORS),      # default: all directions
+                                            labelStyle={"display": "block", "fontSize": "13px",
+                                                        "padding": "2px 0", "cursor": "pointer"},
+                                        ),
+                                    ]),
+                                ]),
                             ]),
                         ],
                     ),
@@ -622,16 +681,34 @@ RANGE_ROW_STYLE = {
     Output("range-row", "style"),
     Output("last-updated", "style"),
     Output("flux-controls", "style"),
+    Output("wd-controls", "style"),
     Input("tabs", "value"),
 )
 def toggle_range(tab_value):
-    """Date picker isn't used on the Setup tab; QC / WD filters only on the flux tab."""
-    hidden = tab_value == SETUP_TAB
+    """Date picker hidden on Setup; QC filters on the flux tab; wind direction on flux + met tabs."""
     lu = {"fontSize": "12px", "color": "#666"}
-    fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, "display": "none"}
-    if hidden:
-        return {**RANGE_ROW_STYLE, "display": "none"}, {**lu, "display": "none"}, fc
-    return RANGE_ROW_STYLE, lu, fc
+    hide = {"display": "none"}
+    fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, **hide}
+    wd = WD_CONTROLS_STYLE if tab_value in (FLUX_TAB, MET_TAB) else {**WD_CONTROLS_STYLE, **hide}
+    if tab_value == SETUP_TAB:
+        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd
+    return RANGE_ROW_STYLE, lu, fc, wd
+
+
+@app.callback(
+    Output("wd-sector", "value"),
+    Input("wd-all", "n_clicks"),
+    Input("wd-none", "n_clicks"),
+    prevent_initial_call=True,
+)
+def wd_select_all_none(_a, _b):
+    from dash import ctx
+    return list(WD_SECTORS) if ctx.triggered_id == "wd-all" else []
+
+
+@app.callback(Output("wd-summary", "children"), Input("wd-sector", "value"))
+def wd_summary(sectors):
+    return f"{sectors_label(sectors)} ▾"
 
 
 @app.callback(
@@ -676,7 +753,7 @@ def refresh_dates(_n, start_date, end_date, old_max):
     Input("qc-fc", "value"),
     Input("wd-sector", "value"),
 )
-def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", sector="all"):
+def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", sector=None):
     if tab_value == SETUP_TAB:
         return setup_layout()
 
@@ -698,6 +775,18 @@ def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", se
     e_txt = "" if end_date is None else str(end_date)
     title_range = f"{s_txt} → {e_txt}".strip(" →")
 
+    if tab_value == MET_TAB:
+        dfm = filter_wd(dff, sector)
+        note = f"Wind direction: {sectors_label(sector)} · {n_records(dfm)} of {len(dff)} records"
+        if n_records(dfm) == 0:
+            return html.Div("No data for the selected wind directions. (" + note + ")",
+                            style={"textAlign": "center", "marginTop": "30px"})
+        fig = make_grid_figure(dfm, vars_list, units_map, title_range, dtick, tickformat)
+        return html.Div([
+            html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+            dcc.Graph(figure=fig),
+        ])
+
     if tab_value != FLUX_TAB:
         fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
         return dcc.Graph(figure=fig)
@@ -706,11 +795,11 @@ def render_tab(tab_value, start_date, end_date, _n, qc_ch4="all", qc_c="all", se
     dfq = filter_flux_df(dff, qc_ch4, qc_c, sector)
     notes = [f"FCH4_QC: {'all' if qc_ch4 == 'all' else '<= ' + str(qc_ch4)}",
              f"FC_QC: {'all' if qc_c == 'all' else '<= ' + str(qc_c)}",
-             f"Wind direction: {sector}",
-             f"{len(dfq)} of {len(dff)} records",
+             f"Wind direction: {sectors_label(sector)}",
+             f"{n_records(dfq)} of {len(dff)} records",
              f"valid FCH4: {int(dfq[FCH4_COL].notna().sum()) if FCH4_COL in dfq else 0}",
              f"valid FC: {int(dfq[FC_COL].notna().sum()) if FC_COL in dfq else 0}"]
-    if dfq.empty:
+    if n_records(dfq) == 0:
         return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
                         style={"textAlign": "center", "marginTop": "30px"})
 
