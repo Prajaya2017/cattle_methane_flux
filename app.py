@@ -639,31 +639,49 @@ def _sector_index(wd: pd.Series, n: int) -> pd.Series:
     return (((wd + w / 2) % 360) // w).astype(int)
 
 
-def make_dir_hour_heatmap(d: pd.DataFrame) -> go.Figure:
-    title = "FCH4 by wind direction × time of day"
+def make_fch4_surface(d: pd.DataFrame) -> go.Figure:
+    """Smoothed FCH4 surface (top view) over wind direction x time of day.
+    Each grid point is a Gaussian-weighted mean of nearby half-hours
+    (sigma 30 deg in direction, 1.5 h in time, both circular); areas with no
+    nearby data are left blank. Dots = measured half-hours."""
+    title = "FCH4 by wind direction \u00d7 time of day (smoothed)"
     if WD_COL not in d or FCH4_COL not in d:
         return _empty_fig(title)
     x = d[[TIME_COL, WD_COL, FCH4_COL]].dropna()
     if len(x) < 3:
         return _empty_fig(title)
-    x = x.assign(sec=_sector_index(x[WD_COL], 8), hr=x[TIME_COL].dt.hour,
-                 f=x[FCH4_COL] / M_CH4 * 1000)
-    piv = x.pivot_table(index="sec", columns="hr", values="f", aggfunc="mean").reindex(
-        index=range(8), columns=range(24))
-    cnt = x.pivot_table(index="sec", columns="hr", values="f", aggfunc="count").reindex(
-        index=range(8), columns=range(24)).fillna(0).astype(int)
-    lim = float(np.nanpercentile(np.abs(piv.values), 95)) if np.isfinite(piv.values).any() else 1
-    f = go.Figure(go.Heatmap(
-        z=piv.values, x=list(range(24)), y=SECT8, customdata=cnt.values,
-        colorscale="RdBu_r", zmid=0, zmin=-lim, zmax=lim,
+    wd = x[WD_COL].to_numpy()
+    hr = (x[TIME_COL].dt.hour + x[TIME_COL].dt.minute / 60).to_numpy()
+    f = (x[FCH4_COL] / M_CH4 * 1000).to_numpy()              # nmol m-2 s-1
+
+    gw, gh = np.arange(0, 361, 10), np.arange(0, 24.01, 0.5)
+    sw, sh = 30.0, 1.5
+    dw = np.abs(gw[None, :, None] - wd[None, None, :]); dw = np.minimum(dw, 360 - dw)
+    dh = np.abs(gh[:, None, None] - hr[None, None, :]); dh = np.minimum(dh, 24 - dh)
+    k = np.exp(-0.5 * ((dw / sw) ** 2 + (dh / sh) ** 2))    # (hours, dirs, points)
+    wsum = k.sum(axis=2)
+    Z = np.where(wsum >= 0.5, (k * f).sum(axis=2) / np.where(wsum > 0, wsum, 1), np.nan)
+
+    lim = float(np.nanpercentile(np.abs(Z), 98)) if np.isfinite(Z).any() else 1.0
+    fig = go.Figure(go.Contour(
+        x=gw, y=gh, z=Z, colorscale="RdBu_r", zmid=0, zmin=-lim, zmax=lim,
+        contours=dict(coloring="heatmap"), connectgaps=False, line=dict(width=0.5),
         colorbar=dict(title="nmol m-2 s-1", thickness=12),
-        hovertemplate="%{y}, %{x}:00<br>FCH4 %{z:.1f}<br>n = %{customdata}<extra></extra>",
+        hovertemplate="WD %{x}\u00b0<br>%{y:.1f} h<br>FCH4 %{z:.1f}<extra>smoothed</extra>",
     ))
-    f.update_layout(
-        title=dict(text=title, x=0.5), height=460, margin=dict(l=50, r=20, t=60, b=50),
-        xaxis=dict(title="Hour of day", dtick=3), yaxis=dict(title="Wind direction"),
+    fig.add_trace(go.Scatter(
+        x=wd, y=hr, mode="markers", marker=dict(size=5, color="black", opacity=0.6),
+        customdata=f, showlegend=False,
+        hovertemplate="WD %{x:.0f}\u00b0<br>%{y:.1f} h<br>FCH4 %{customdata:.1f}<extra>measured</extra>",
+    ))
+    fig.update_layout(
+        title=dict(text=title + f" \u00b7 n = {len(f)}", x=0.5), height=460,
+        margin=dict(l=55, r=20, t=60, b=50),
+        xaxis=dict(title="Wind direction (\u00b0)", range=[0, 360],
+                   tickvals=[0, 90, 180, 270, 360], ticktext=["0 N", "90 E", "180 S", "270 W", "360 N"]),
+        yaxis=dict(title="Hour of day", range=[0, 24], dtick=3),
     )
-    return f
+    return fig
 
 
 DIURNAL_VARS = [  # (column, label, factor, unit)
@@ -982,7 +1000,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
                      plot_card(make_wind_rose(dfq), n, style=analysis_style),
                      plot_card(make_fch4_vs_wd(dfq), n + 1, style=analysis_style),
                      plot_card(make_fch4_fc_regression(dfq), n + 2, style=analysis_style),
-                     plot_card(make_dir_hour_heatmap(dfq), n + 3, style=analysis_style),
+                     plot_card(make_fch4_surface(dfq), n + 3, style=analysis_style),
                  ]),
         html.Div(plot_card(make_diurnal(dfq), n + 4), style={"marginTop": "10px"}),
     ])
