@@ -368,7 +368,7 @@ def panel_grid(df, vars_list, units_map, dtick, tickformat, title_text, start_id
 # =========================
 app = Dash(__name__, suppress_callback_exceptions=True)
 server = app.server          # Render / gunicorn entry point:  gunicorn app:server
-app.title = "Cattle Methane Emission Measurement"
+app.title = "TGA310 Cattle CH4 Emission Measurement"
 
 
 # =========================
@@ -447,20 +447,23 @@ def setup_layout():
 # =========================
 TAB_STYLE = {
     "padding": "6px 14px",
-    "fontSize": "13px",
-    "height": "32px",
-    "lineHeight": "32px",
-    "border": "1px solid #ddd",
+    "fontSize": "26px",
+    "fontWeight": "bold",
+    "height": "54px",
+    "lineHeight": "40px",
+    "border": "1px solid #cfe0d8",
     "borderBottom": "none",
-    "borderRadius": "6px 6px 0 0",
-    "backgroundColor": "#f7f7f7",
+    "borderRadius": "12px 12px 0 0",
+    "background": "linear-gradient(180deg, #f4faf7 0%, #e3f0ea 100%)",
+    "color": "#2f6b55",
     "marginRight": "6px",
 }
 TAB_SELECTED_STYLE = {
     **TAB_STYLE,
-    "fontWeight": "bold",
-    "backgroundColor": "white",
-    "borderTop": "2px solid #1f77b4",
+    "background": "linear-gradient(135deg, #1b7f5a 0%, #2fa36f 100%)",
+    "color": "white",
+    "border": "1px solid #1b7f5a",
+    "boxShadow": "0 -2px 8px rgba(27,127,90,0.25)",
 }
 
 
@@ -760,7 +763,9 @@ def serve_layout():
                     "gap": "8px",
                 },
                 children=[
-                    html.H3("Cattle Methane Emission Measurement using TGA310", style={"margin": "0", "textAlign": "center"}),
+                    html.H1("TGA310 Cattle CH\u2084 Emission Measurement", style={
+                        "margin": "4px 0 2px", "textAlign": "center", "fontSize": "34px",
+                        "fontWeight": "800", "color": "#1b4d3e", "letterSpacing": "0.3px"}),
                     html.Div(
                         id="range-row",
                         style={
@@ -819,7 +824,8 @@ def serve_layout():
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
                 ],
             ),
-            dcc.Tabs(id="tabs", value=SETUP_TAB, children=[
+            dcc.Tabs(id="tabs", value=SETUP_TAB,
+                     style={"borderBottom": "3px solid #1b7f5a", "marginTop": "6px"}, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
                 for n in [SETUP_TAB] + tab_names
             ]),
