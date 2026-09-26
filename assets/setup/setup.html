@@ -20,6 +20,27 @@
   figcaption { padding: 10px 12px; }
   h3 { margin: 0 0 4px; font-size: 15px; }
   p { margin: 0; font-size: 13px; color: #444; line-height: 1.4; }
+  .card { position: relative; }
+  .max-btn { position: absolute; top: 8px; right: 8px; z-index: 2; width: 21px; height: 21px;
+             border: 1px solid #1f77b4; border-radius: 5px; background: rgba(255,255,255,.92);
+             cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .max-btn:hover { background: #e8f1fb; }
+  .max-btn svg { width: 12px; height: 12px; }
+  .card img { cursor: zoom-in; }
+  /* lightbox */
+  #lb { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.82); z-index: 1000;
+        flex-direction: column; align-items: center; justify-content: center; }
+  #lb.open { display: flex; }
+  #lb img { max-width: 94vw; max-height: 80vh; object-fit: contain; border-radius: 6px;
+            box-shadow: 0 8px 30px rgba(0,0,0,.5); background: #fff; }
+  #lb .lb-cap { color: #fff; margin-top: 10px; text-align: center; max-width: 90vw; font-size: 14px; }
+  #lb .lb-cap b { display: block; font-size: 16px; margin-bottom: 3px; }
+  #lb .lb-btn { position: absolute; background: rgba(255,255,255,.95); border: none; border-radius: 8px;
+                cursor: pointer; font-size: 15px; padding: 8px 14px; display: flex; align-items: center; gap: 6px; }
+  #lb .lb-btn:hover { background: #fff; }
+  #lb .lb-close { top: 14px; right: 16px; }
+  #lb .lb-prev, #lb .lb-next { top: 50%; transform: translateY(-50%); font-size: 26px; padding: 6px 14px; }
+  #lb .lb-prev { left: 14px; }  #lb .lb-next { right: 14px; }
 </style>
 </head>
 <body>
@@ -61,5 +82,55 @@
       <figcaption><h3>Trail camera - 09/24/2026 12:58</h3><p>About 45 minutes later, cattle have moved closer to the tower. Animal position relative to the footprint strongly affects the CH4 flux the tower sees.</p></figcaption>
     </figure>
   </div>
+
+  <div id="lb" role="dialog" aria-modal="true">
+    <button class="lb-btn lb-close" title="Minimize (Esc)">
+      <svg width="16" height="16" viewBox="0 0 28 28" fill="none"><path d="M3 11H11V3M25 17H17V25" stroke="#1f77b4" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 11L3 3M17 17L25 25" stroke="#1f77b4" stroke-width="2.6" stroke-linecap="round"/></svg>
+      Minimize
+    </button>
+    <button class="lb-btn lb-prev" title="Previous (←)">&#8249;</button>
+    <button class="lb-btn lb-next" title="Next (→)">&#8250;</button>
+    <img alt="">
+    <div class="lb-cap"></div>
+  </div>
+
+<script>
+(function () {
+  const MAX_ICON = '<svg viewBox="0 0 28 28" fill="none"><path d="M9 5H5C3.3 5 2 6.3 2 8V23C2 24.7 3.3 26 5 26H20C21.7 26 23 24.7 23 23V19" stroke="#1f77b4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 14L25 3M18 3H25V10" stroke="#1f77b4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const cards = Array.from(document.querySelectorAll(".card"));
+  const lb = document.getElementById("lb"), lbImg = lb.querySelector("img"), lbCap = lb.querySelector(".lb-cap");
+  let cur = 0;
+
+  function show(i) {
+    cur = (i + cards.length) % cards.length;
+    const img = cards[cur].querySelector("img");
+    const h = cards[cur].querySelector("h3"), p = cards[cur].querySelector("p");
+    lbImg.src = img.getAttribute("src"); lbImg.alt = img.alt;
+    lbCap.innerHTML = (h ? "<b>" + h.innerHTML + "</b>" : "") + (p ? p.innerHTML : "");
+    lb.classList.add("open");
+  }
+  function hide() { lb.classList.remove("open"); }
+
+  cards.forEach((card, i) => {
+    const b = document.createElement("button");           // maximize button on every card
+    b.className = "max-btn"; b.title = "Maximize"; b.innerHTML = MAX_ICON;
+    b.addEventListener("click", e => { e.preventDefault(); show(i); });
+    card.prepend(b);
+    const a = card.querySelector("a");                     // clicking the photo also maximizes
+    if (a) a.addEventListener("click", e => { e.preventDefault(); show(i); });
+  });
+
+  lb.querySelector(".lb-close").onclick = hide;
+  lb.querySelector(".lb-prev").onclick = e => { e.stopPropagation(); show(cur - 1); };
+  lb.querySelector(".lb-next").onclick = e => { e.stopPropagation(); show(cur + 1); };
+  lb.addEventListener("click", e => { if (e.target === lb) hide(); });   // click backdrop to close
+  document.addEventListener("keydown", e => {
+    if (!lb.classList.contains("open")) return;
+    if (e.key === "Escape") hide();
+    if (e.key === "ArrowLeft") show(cur - 1);
+    if (e.key === "ArrowRight") show(cur + 1);
+  });
+})();
+</script>
 </body>
 </html>
