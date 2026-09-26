@@ -18,7 +18,7 @@ Dash app: CSFlux (TGA310 methane EC) dashboard.
 import os
 os.environ["DASH_JUPYTER_MODE"] = "_none"
 
-import re
+import math
 import threading
 import time
 from io import StringIO
@@ -28,6 +28,7 @@ import pandas as pd
 
 from dash import Dash, dcc, html, Input, Output, State
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 # =========================
@@ -46,7 +47,8 @@ GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{FIL
 # How often to re-download data from GitHub (minutes)
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))
 
-PANEL_HEIGHT_PX = 270       # height of each time-series plot (columns fill the page width)
+GRID_COLS = 5
+ROW_HEIGHT_PX = 230
 
 # Main variables only, grouped into tabs (edit to add/remove)
 TABS = {
@@ -93,6 +95,9 @@ USTAR_OPTIONS = [{"label": "None", "value": "none"},
                  {"label": ">= 0.1 m/s", "value": 0.1},
                  {"label": ">= 0.2 m/s", "value": 0.2}]
 ET_COL = "ET"
+CH4_CONC_COL = "CH4_mixratio"          # nmol mol-1 (ppb)
+CO2_DENS_COL = "CO2_density"           # mg m-3 -> converted to ppm with TA and PA
+TA_COL, PA_COL = "TA_1_1_1", "PA"      # deg C, kPa
 
 # QC dropdowns on the flux tab: (dropdown id, label, flux column, QC column)
 QC_FILTERS = [
@@ -209,48 +214,6 @@ def format_title(var: str, units_map: dict[str, str]) -> str:
     return f"{var} ({str(u).strip()})"
 
 
-def pretty_label(text: str) -> str:
-    """Plotly HTML for chemical formulas and units, e.g.
-    'FCH4_mass (ugCH4 m-2 s-1)' -> 'FCH<sub>4</sub>_mass (µg CH<sub>4</sub> m<sup>−2</sup> s<sup>−1</sup>)'."""
-    if not text or "<sub>" in text or "<sup>" in text:
-        return text
-    t = text.replace("deg C", "°C").replace("decimal degrees", "°")
-    t = re.sub(r"(?<![A-Za-z])u(?=g|mol)", "µ", t)                                   # ug, umol
-    t = re.sub(r"(?<![A-Za-z])(µ?g|mg|n?mol|µmol|mmol)(CH4|CO2|H2O)", r"\1 \2", t)  # ugCH4 -> ug CH4
-    t = re.sub(r"CH4", "CH<sub>4</sub>", t)
-    t = re.sub(r"CO2", "CO<sub>2</sub>", t)
-    t = re.sub(r"H2O", "H<sub>2</sub>O", t)
-    t = re.sub(r"(?<![A-Za-z0-9_])(m|s|hour|mol)(-?)(\d)(?![\dA-Za-z_])",
-               lambda m: f"{m[1]}<sup>{'−' if m[2] else ''}{m[3]}</sup>", t)          # m-2 -> m<sup>−2</sup>
-    return t
-
-
-def fix_labels(fig: go.Figure) -> go.Figure:
-    """Apply pretty_label to the title, subplot titles, axis titles and colorbar titles."""
-    lay = fig.layout
-    if lay.title and lay.title.text:
-        lay.title.text = pretty_label(lay.title.text)
-    for a in lay.annotations or []:
-        if a.text:
-            a.text = pretty_label(a.text)
-    for name in list(lay):
-        if name.startswith(("xaxis", "yaxis")) and lay[name].title and lay[name].title.text:
-            lay[name].title.text = pretty_label(lay[name].title.text)
-    for tr in fig.data:
-        cb = getattr(tr, "colorbar", None)
-        if cb is not None and cb.title and cb.title.text:
-            cb.title.text = pretty_label(cb.title.text)
-    return fig
-
-
-def plot_box(fig: go.Figure, style=None) -> html.Div:
-    """Graph with a maximize button (behaviour in assets/maximize.js)."""
-    return html.Div(className="plot-box", style=style, children=[
-        html.Button("⛶", className="max-btn", title="Maximize", n_clicks=0),
-        dcc.Graph(figure=fix_labels(fig), config={"responsive": True}),
-    ])
-
-
 def filter_df_by_datepicker_range(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
     """Inclusive filtering with FULL-DAY support when start_date == end_date."""
     if start_date is None and end_date is None:
@@ -307,51 +270,72 @@ def panel_vars(panel):
     return [panel] if isinstance(panel, str) else [c for c, _ in panel[1]]
 
 
-def make_panel_figure(df, panel, units_map, dtick, tickformat) -> go.Figure:
-    """One time-series panel: a column name, or (title, [(col, label), ...]) for several lines."""
-    if isinstance(panel, str):
-        title = format_title(panel, units_map)
-        series = [(panel, panel, None)]
-    else:
-        title = panel[0]
-        series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)])
-                  for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
+def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) -> go.Figure:
+    n_rows = max(1, math.ceil(len(vars_list) / GRID_COLS))
+    n_cells = n_rows * GRID_COLS
 
-    fig = go.Figure()
-    for col, lab, color in series:
-        fig.add_trace(go.Scatter(
-            x=df[TIME_COL], y=df[col], mode="lines+markers", name=lab,
-            marker=dict(size=3, color=color) if color else dict(size=3),
-            line=dict(color=color) if color else None,
-            hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
-        ))
-        if col in Y_RANGES:
-            fig.update_yaxes(range=Y_RANGES[col])
+    subplot_titles = [format_title(v, units_map) if isinstance(v, str) else v[0] for v in vars_list]
+    subplot_titles += [""] * (n_cells - len(vars_list))
 
-    fig.update_xaxes(type="date", tickmode="linear", tick0=aligned_tick0(df[TIME_COL].min(), dtick),
-                     dtick=dtick, tickformat=tickformat, tickangle=30, tickfont=dict(size=10))
+    fig = make_subplots(
+        rows=n_rows,
+        cols=GRID_COLS,
+        subplot_titles=subplot_titles,
+        horizontal_spacing=0.04,
+        vertical_spacing=min(0.12, 0.35 / n_rows),
+    )
+    fig.update_annotations(font=dict(size=14, color="#333"))
+    fig.update_xaxes(tickfont=dict(size=10))
     fig.update_yaxes(tickfont=dict(size=10))
+
+    legend_panel = None
+    for i, panel in enumerate(vars_list):
+        r = i // GRID_COLS + 1
+        c = i % GRID_COLS + 1
+        if isinstance(panel, str):
+            series = [(panel, panel, None, False)]
+        else:
+            series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)], True)
+                      for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
+            if legend_panel is None:
+                legend_panel = i
+        for col, lab, color, show in series:
+            fig.add_trace(
+                go.Scatter(
+                    x=df[TIME_COL],
+                    y=df[col],
+                    mode="lines+markers",
+                    marker=dict(size=3, color=color) if color else dict(size=3),
+                    name=lab,
+                    showlegend=show,
+                    line=dict(color=color) if color else None,
+                    hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
+                ),
+                row=r, col=c,
+            )
+            if col in Y_RANGES:
+                fig.update_yaxes(range=Y_RANGES[col], row=r, col=c)
+
+    if legend_panel is not None:
+        # put the legend inside the combined panel (top-left corner)
+        n = legend_panel + 1
+        xd = fig.layout["xaxis" if n == 1 else f"xaxis{n}"].domain
+        yd = fig.layout["yaxis" if n == 1 else f"yaxis{n}"].domain
+        fig.update_layout(legend=dict(x=xd[0] + 0.005, y=yd[1] - 0.005, xanchor="left", yanchor="top",
+                                      bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)))
+
+    tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
+    fig.update_xaxes(
+        type="date", tickmode="linear", tick0=tick0, dtick=dtick,
+        tickformat=tickformat, tickangle=30, showticklabels=True,
+    )
+
     fig.update_layout(
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#333")),
-        height=PANEL_HEIGHT_PX, margin=dict(l=45, r=10, t=40, b=55),
-        showlegend=len(series) > 1,
-        legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top",
-                    bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)),
+        title=dict(text=title_text, x=0.5, xanchor="center"),
+        height=n_rows * ROW_HEIGHT_PX + 140,
+        margin=dict(l=30, r=20, t=70, b=80),
     )
     return fig
-
-
-def plot_grid(figs, title_text="") -> html.Div:
-    """Grid of individually maximizable plots under a common heading."""
-    return html.Div([
-        html.H4(title_text, className="grid-title") if title_text else None,
-        html.Div(className="plot-grid", children=[plot_box(f) for f in figs]),
-    ])
-
-
-def time_series_grid(df, vars_list, units_map, title_text, dtick, tickformat) -> html.Div:
-    return plot_grid([make_panel_figure(df, p, units_map, dtick, tickformat) for p in vars_list],
-                     title_text)
 
 
 # =========================
@@ -619,6 +603,8 @@ def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
     return f
 
 
+SECT16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+          "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 SECT8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 
@@ -667,42 +653,45 @@ def _rgba(hex_color: str, a: float) -> str:
     return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{a})"
 
 
-def make_diurnal(d: pd.DataFrame) -> list[go.Figure]:
-    """One figure per flux: mean by time of day (30-min bins) with a shaded +/- 1 SD band."""
+def make_diurnal(d: pd.DataFrame) -> go.Figure:
+    """Mean by time of day (30-min bins) with a shaded +/- 1 standard deviation band."""
+    fig = make_subplots(rows=1, cols=len(DIURNAL_VARS), horizontal_spacing=0.06,
+                        subplot_titles=[f"{lab} ({u})" for _c, lab, _k, u in DIURNAL_VARS])
     colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
     hod = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
-    figs = []
-    for i, (col, lab, k, u) in enumerate(DIURNAL_VARS):
-        title = f"{lab} diurnal cycle ({u})"
+    first = True
+    for i, (col, lab, k, _u) in enumerate(DIURNAL_VARS, start=1):
         if col not in d:
-            figs.append(_empty_fig(title))
             continue
         g = (d[col] * k).groupby(hod).agg(["mean", "std", "count"])
         g = g[g["count"] > 0].sort_index()
         if g.empty:
-            figs.append(_empty_fig(title))
             continue
         sd = g["std"].fillna(0)
         up, dn = g["mean"] + sd, g["mean"] - sd
-        c = colors[i % len(colors)]
-        f = go.Figure()
+        c = colors[(i - 1) % len(colors)]
         # shaded SD band: upper edge, then lower edge filled up to it
-        f.add_trace(go.Scatter(x=g.index, y=up, mode="lines", line=dict(width=0),
-                               hoverinfo="skip", showlegend=False))
-        f.add_trace(go.Scatter(x=g.index, y=dn, mode="lines", line=dict(width=0),
-                               fill="tonexty", fillcolor=_rgba(c, 0.25), name="± 1 SD",
-                               hoverinfo="skip"))
-        f.add_trace(go.Scatter(x=g.index, y=g["mean"], mode="lines+markers", name="Mean",
-                               line=dict(color=c, width=2), marker=dict(size=4),
-                               customdata=np.stack([sd, g["count"]], axis=-1),
-                               hovertemplate="%{x:.1f} h<br>mean %{y:.2f}<br>SD %{customdata[0]:.2f}"
-                                             "<br>n = %{customdata[1]}<extra>" + lab + "</extra>"))
-        f.update_xaxes(range=[0, 24], dtick=6, title_text="Hour of day")
-        f.update_layout(title=dict(text=title, x=0.5, font=dict(size=14)), height=360,
-                        margin=dict(l=45, r=10, t=45, b=50),
-                        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)))
-        figs.append(f)
-    return figs
+        fig.add_trace(go.Scatter(x=g.index, y=up, mode="lines", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False, legendgroup="sd"),
+                      row=1, col=i)
+        fig.add_trace(go.Scatter(x=g.index, y=dn, mode="lines", line=dict(width=0),
+                                 fill="tonexty", fillcolor=_rgba(c, 0.25),
+                                 name="± 1 SD", legendgroup="sd", showlegend=first,
+                                 hoverinfo="skip"), row=1, col=i)
+        fig.add_trace(go.Scatter(x=g.index, y=g["mean"], mode="lines+markers",
+                                 line=dict(color=c, width=2), marker=dict(size=4),
+                                 name="Mean", legendgroup="mean", showlegend=first,
+                                 customdata=np.stack([sd, g["count"]], axis=-1),
+                                 hovertemplate="%{x:.1f} h<br>mean %{y:.2f}<br>SD %{customdata[0]:.2f}"
+                                               "<br>n = %{customdata[1]}<extra>" + lab + "</extra>"),
+                      row=1, col=i)
+        fig.update_xaxes(range=[0, 24], dtick=6, title_text="Hour of day", row=1, col=i)
+        first = False
+    fig.update_layout(title=dict(text="Diurnal cycle (mean ± 1 SD)", x=0.5), height=400,
+                      margin=dict(l=40, r=20, t=90, b=50),
+                      legend=dict(orientation="h", x=1, xanchor="right", y=1.12, yanchor="bottom"))
+    fig.update_annotations(font=dict(size=13))
+    return fig
 
 
 def serve_layout():
@@ -921,13 +910,15 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         if n_records(dfm) == 0:
             return html.Div("No data for the selected wind directions. (" + note + ")",
                             style={"textAlign": "center", "marginTop": "30px"})
+        fig = make_grid_figure(dfm, vars_list, units_map, title_range, dtick, tickformat)
         return html.Div([
             html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-            time_series_grid(dfm, vars_list, units_map, title_range, dtick, tickformat),
+            dcc.Graph(figure=fig),
         ])
 
     if tab_value != FLUX_TAB:
-        return time_series_grid(dff, vars_list, units_map, title_range, dtick, tickformat)
+        fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
+        return dcc.Graph(figure=fig)
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
@@ -942,17 +933,18 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
                         style={"textAlign": "center", "marginTop": "30px"})
 
+    fig = make_grid_figure(dfq, vars_list, units_map, title_range, dtick, tickformat)
     analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
         html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-        time_series_grid(dfq, vars_list, units_map, title_range, dtick, tickformat),
+        dcc.Graph(figure=fig),
         html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px"}, children=[
-            plot_box(make_wind_rose(dfq), style=analysis_style),
-            plot_box(make_fch4_vs_wd(dfq), style=analysis_style),
-            plot_box(make_fch4_fc_regression(dfq), style=analysis_style),
-            plot_box(make_dir_hour_heatmap(dfq), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
+            html.Div(dcc.Graph(figure=make_dir_hour_heatmap(dfq)), style=analysis_style),
         ]),
-        plot_grid(make_diurnal(dfq), "Diurnal cycle (mean ± 1 SD)"),
+        dcc.Graph(figure=make_diurnal(dfq)),
     ])
 
 
