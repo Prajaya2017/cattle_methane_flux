@@ -26,7 +26,8 @@ import requests
 import numpy as np
 import pandas as pd
 
-from dash import Dash, dcc, html, Input, Output, State
+from dash import Dash, dcc, html, Input, Output, State, ALL
+from urllib.parse import quote
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -58,6 +59,7 @@ TABS = {
         "LE",            # latent heat flux
         "H",             # sensible heat flux
         "ET",            # evapotranspiration
+        "FH2O",          # water vapour flux (calculated from LE)
         "TAU",           # momentum flux
         "USTAR",         # friction velocity
         "TKE",           # turbulent kinetic energy
@@ -195,6 +197,12 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
         if c != TIME_COL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    # Water vapour flux (not in CSFlux table): FH2O = LE / lambda(T) / M_H2O  -> mmol m-2 s-1
+    if "LE" in df.columns:
+        t = df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0
+        lam = (2.501 - 0.00237 * t) * 1e6                     # J kg-1
+        df["FH2O"] = df["LE"] / lam / 18.015 * 1e6           # mmol m-2 s-1
+
     # Wind direction offset (e.g. sonic mounted pointing the opposite way)
     if WD_COL in df.columns and WD_OFFSET_DEG:
         df[WD_COL] = (df[WD_COL] + WD_OFFSET_DEG) % 360
@@ -270,72 +278,89 @@ def panel_vars(panel):
     return [panel] if isinstance(panel, str) else [c for c, _ in panel[1]]
 
 
-def make_grid_figure(df, vars_list, units_map, title_text, dtick, tickformat) -> go.Figure:
-    n_rows = max(1, math.ceil(len(vars_list) / GRID_COLS))
-    n_cells = n_rows * GRID_COLS
+PANEL_HEIGHT_PX = 260
 
-    subplot_titles = [format_title(v, units_map) if isinstance(v, str) else v[0] for v in vars_list]
-    subplot_titles += [""] * (n_cells - len(vars_list))
+# Maximize icon (same as TGA data monitor)
+_MAX_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28" fill="none">
+<path d="M9 5H5C3.34315 5 2 6.34315 2 8V23C2 24.6569 3.34315 26 5 26H20C21.6569 26 23 24.6569 23 23V19"
+ stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M14 14L25 3" stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M18 3H25V10" stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"""
+MAXIMIZE_ICON_URI = "data:image/svg+xml;utf8," + quote(_MAX_SVG)
 
-    fig = make_subplots(
-        rows=n_rows,
-        cols=GRID_COLS,
-        subplot_titles=subplot_titles,
-        horizontal_spacing=0.04,
-        vertical_spacing=min(0.12, 0.35 / n_rows),
-    )
-    fig.update_annotations(font=dict(size=14, color="#333"))
-    fig.update_xaxes(tickfont=dict(size=10))
-    fig.update_yaxes(tickfont=dict(size=10))
+MAX_BTN_STYLE = {"padding": "2px", "borderRadius": "4px", "border": "1px solid #1f77b4",
+                 "backgroundColor": "white", "cursor": "pointer", "width": "22px", "height": "22px",
+                 "display": "flex", "alignItems": "center", "justifyContent": "center"}
+CARD_STYLE = {"border": "1px solid #ddd", "borderRadius": "10px", "padding": "6px",
+              "backgroundColor": "white", "boxShadow": "0 1px 4px rgba(0,0,0,0.08)", "minWidth": 0}
+MODAL_HIDDEN = {"display": "none", "position": "fixed", "top": 0, "left": 0, "width": "100%",
+                "height": "100%", "backgroundColor": "rgba(0,0,0,0.45)", "zIndex": 9999,
+                "justifyContent": "center", "alignItems": "center"}
 
-    legend_panel = None
-    for i, panel in enumerate(vars_list):
-        r = i // GRID_COLS + 1
-        c = i % GRID_COLS + 1
-        if isinstance(panel, str):
-            series = [(panel, panel, None, False)]
-        else:
-            series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)], True)
-                      for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
-            if legend_panel is None:
-                legend_panel = i
-        for col, lab, color, show in series:
-            fig.add_trace(
-                go.Scatter(
-                    x=df[TIME_COL],
-                    y=df[col],
-                    mode="lines+markers",
-                    marker=dict(size=3, color=color) if color else dict(size=3),
-                    name=lab,
-                    showlegend=show,
-                    line=dict(color=color) if color else None,
-                    hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
-                ),
-                row=r, col=c,
-            )
-            if col in Y_RANGES:
-                fig.update_yaxes(range=Y_RANGES[col], row=r, col=c)
 
-    if legend_panel is not None:
-        # put the legend inside the combined panel (top-left corner)
-        n = legend_panel + 1
-        xd = fig.layout["xaxis" if n == 1 else f"xaxis{n}"].domain
-        yd = fig.layout["yaxis" if n == 1 else f"yaxis{n}"].domain
-        fig.update_layout(legend=dict(x=xd[0] + 0.005, y=yd[1] - 0.005, xanchor="left", yanchor="top",
-                                      bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)))
+def plot_card(fig: go.Figure, idx: int, height: int | None = None, style: dict | None = None):
+    """Plot in a card with a maximize button (opens the figure in a large pop-up)."""
+    h = height or (fig.layout.height or PANEL_HEIGHT_PX)
+    return html.Div(style={**CARD_STYLE, **(style or {})}, children=[
+        html.Div(style={"display": "flex", "justifyContent": "flex-end", "marginBottom": "2px"},
+                 children=[html.Button(
+                     html.Img(src=MAXIMIZE_ICON_URI, style={"width": "14px", "height": "14px",
+                                                            "display": "block"}),
+                     id={"type": "max-btn", "index": idx}, n_clicks=0, title="Maximize",
+                     style=MAX_BTN_STYLE)]),
+        dcc.Graph(id={"type": "card-graph", "index": idx}, figure=fig,
+                  style={"height": f"{h}px"}, config={"displaylogo": False}),
+    ])
 
+
+PANEL_COLORS = ["#636efa", "#EF553B", "#00cc96", "#ab63fa", "#FFA15A",
+                "#19d3f3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"]
+
+
+def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go.Figure:
+    """One time-series panel: a column name, or (title, [(col, label), ...]) for several lines."""
+    if isinstance(panel, str):
+        title = format_title(panel, units_map)
+        series = [(panel, panel, color, False)]
+    else:
+        title = panel[0]
+        series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)], True)
+                  for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
+    fig = go.Figure()
+    for col, lab, color, show in series:
+        fig.add_trace(go.Scatter(
+            x=df[TIME_COL], y=df[col], mode="lines+markers",
+            marker=dict(size=3, color=color) if color else dict(size=3),
+            line=dict(color=color) if color else None, name=lab, showlegend=show,
+            hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
+        ))
+        if col in Y_RANGES:
+            fig.update_yaxes(range=Y_RANGES[col])
     tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
-    fig.update_xaxes(
-        type="date", tickmode="linear", tick0=tick0, dtick=dtick,
-        tickformat=tickformat, tickangle=30, showticklabels=True,
-    )
-
+    fig.update_xaxes(type="date", tickmode="linear", tick0=tick0, dtick=dtick,
+                     tickformat=tickformat, tickangle=30, tickfont=dict(size=10))
+    fig.update_yaxes(tickfont=dict(size=10))
     fig.update_layout(
-        title=dict(text=title_text, x=0.5, xanchor="center"),
-        height=n_rows * ROW_HEIGHT_PX + 140,
-        margin=dict(l=30, r=20, t=70, b=80),
+        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#333")),
+        height=PANEL_HEIGHT_PX, margin=dict(l=45, r=10, t=40, b=45),
+        legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top",
+                    bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)),
     )
     return fig
+
+
+def panel_grid(df, vars_list, units_map, dtick, tickformat, title_text, start_idx=0):
+    """Grid of individual plot cards (each with its own maximize button)."""
+    cards = [plot_card(make_panel_figure(df, p, units_map, dtick, tickformat,
+                                         color=PANEL_COLORS[i % len(PANEL_COLORS)]), start_idx + i)
+             for i, p in enumerate(vars_list)]
+    return html.Div([
+        html.Div(title_text, style={"textAlign": "center", "fontSize": "17px", "color": "#333",
+                                    "margin": "8px 0"}),
+        html.Div(cards, style={"display": "grid", "gap": "10px",
+                               "gridTemplateColumns": "repeat(auto-fill, minmax(260px, 1fr))"}),
+    ])
 
 
 # =========================
@@ -366,7 +391,7 @@ def load_data(force: bool = False):
         if force or age > max_age:
             try:
                 text = fetch_toa5_text_from_github()
-                _DATA["units"] = read_units_map_from_toa5_text(text)
+                _DATA["units"] = {**read_units_map_from_toa5_text(text), "FH2O": "mmol m-2 s-1"}
                 _DATA["df"] = read_toa5_df_from_text(text)
                 _DATA["error"] = ""
                 df = _DATA["df"]
@@ -498,9 +523,10 @@ def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.Data
     d = df.copy()
     for (_id, _lab, col, qc_col), lim in zip(QC_FILTERS, qc_limits):
         if lim not in (None, "all") and col in d and qc_col in d:
-            d.loc[~(d[qc_col] <= lim), col] = float("nan")
+            cols = [col, "FH2O"] if col == LE_COL and "FH2O" in d else [col]
+            d.loc[~(d[qc_col] <= lim), cols] = float("nan")
     if ustar not in (None, "none") and USTAR_COL in d:
-        flux_cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "TAU", "Bowen_ratio"] if c in d]
+        flux_cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "FH2O", "TAU", "Bowen_ratio"] if c in d]
         d.loc[~(d[USTAR_COL] >= float(ustar)), flux_cols] = float("nan")
     return filter_wd(d, sector)
 
@@ -644,6 +670,7 @@ DIURNAL_VARS = [  # (column, label, factor, unit)
     (FCH4_COL, "FCH4", 1000 / M_CH4, "nmol m-2 s-1"),
     (FC_COL, "FC", 1000 / M_CO2, "µmol m-2 s-1"),
     (LE_COL, "LE", 1, "W m-2"),
+    ("FH2O", "FH2O", 1, "mmol m-2 s-1"),
     (H_COL, "H", 1, "W m-2"),
 ]
 
@@ -657,7 +684,7 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
     """Mean by time of day (30-min bins) with a shaded +/- 1 standard deviation band."""
     fig = make_subplots(rows=1, cols=len(DIURNAL_VARS), horizontal_spacing=0.06,
                         subplot_titles=[f"{lab} ({u})" for _c, lab, _k, u in DIURNAL_VARS])
-    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
+    colors = ["#1f77b4", "#d62728", "#2ca02c", "#17becf", "#9467bd"]
     hod = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
     first = True
     for i, (col, lab, k, _u) in enumerate(DIURNAL_VARS, start=1):
@@ -779,6 +806,20 @@ def serve_layout():
                 for n in [SETUP_TAB] + tab_names
             ]),
             html.Div(id="tab-content", style={"marginTop": "8px"}),
+            # Pop-up for a maximized plot
+            html.Div(id="modal-overlay", style=MODAL_HIDDEN, children=[
+                html.Div(style={"width": "92%", "height": "88%", "backgroundColor": "white",
+                                "borderRadius": "12px", "padding": "12px",
+                                "boxShadow": "0 8px 24px rgba(0,0,0,0.25)",
+                                "display": "flex", "flexDirection": "column"}, children=[
+                    html.Div(style={"display": "flex", "justifyContent": "flex-end", "marginBottom": "8px"},
+                             children=[html.Button("Close", id="close-modal-btn", n_clicks=0, style={
+                                 "padding": "8px 14px", "borderRadius": "8px", "border": "1px solid #888",
+                                 "backgroundColor": "white", "cursor": "pointer"})]),
+                    dcc.Graph(id="zoom-graph", style={"flex": "1 1 auto", "minHeight": 0},
+                              config={"displaylogo": False}),
+                ]),
+            ]),
             # Re-check GitHub while the page is open
             dcc.Interval(id="refresh", n_intervals=0,
                          interval=(RETRY_SECONDS_WHEN_EMPTY * 1000 if df.empty
@@ -910,15 +951,13 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         if n_records(dfm) == 0:
             return html.Div("No data for the selected wind directions. (" + note + ")",
                             style={"textAlign": "center", "marginTop": "30px"})
-        fig = make_grid_figure(dfm, vars_list, units_map, title_range, dtick, tickformat)
         return html.Div([
             html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-            dcc.Graph(figure=fig),
+            panel_grid(dfm, vars_list, units_map, dtick, tickformat, title_range),
         ])
 
     if tab_value != FLUX_TAB:
-        fig = make_grid_figure(dff, vars_list, units_map, title_range, dtick, tickformat)
-        return dcc.Graph(figure=fig)
+        return panel_grid(dff, vars_list, units_map, dtick, tickformat, title_range)
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
@@ -933,19 +972,50 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
         return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
                         style={"textAlign": "center", "marginTop": "30px"})
 
-    fig = make_grid_figure(dfq, vars_list, units_map, title_range, dtick, tickformat)
+    n = len(vars_list)
     analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
         html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-        dcc.Graph(figure=fig),
-        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px"}, children=[
-            html.Div(dcc.Graph(figure=make_wind_rose(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_fch4_vs_wd(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_fch4_fc_regression(dfq)), style=analysis_style),
-            html.Div(dcc.Graph(figure=make_dir_hour_heatmap(dfq)), style=analysis_style),
-        ]),
-        dcc.Graph(figure=make_diurnal(dfq)),
+        panel_grid(dfq, vars_list, units_map, dtick, tickformat, title_range),
+        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "marginTop": "14px"},
+                 children=[
+                     plot_card(make_wind_rose(dfq), n, style=analysis_style),
+                     plot_card(make_fch4_vs_wd(dfq), n + 1, style=analysis_style),
+                     plot_card(make_fch4_fc_regression(dfq), n + 2, style=analysis_style),
+                     plot_card(make_dir_hour_heatmap(dfq), n + 3, style=analysis_style),
+                 ]),
+        html.Div(plot_card(make_diurnal(dfq), n + 4), style={"marginTop": "10px"}),
     ])
+
+
+# Maximize: copy the clicked card's figure into the pop-up (runs in the browser, no server call)
+app.clientside_callback(
+    """
+    function(maxClicks, closeClicks, figs) {
+        const hidden = %s;
+        const shown = Object.assign({}, hidden, {display: "flex"});
+        const ctx = dash_clientside.callback_context;
+        if (!ctx.triggered || !ctx.triggered.length) { return [dash_clientside.no_update, dash_clientside.no_update]; }
+        const t = ctx.triggered[0];
+        if (t.prop_id.startsWith("close-modal-btn")) { return [hidden, {}]; }
+        if (!t.value) { return [dash_clientside.no_update, dash_clientside.no_update]; }
+        const id = JSON.parse(t.prop_id.split(".")[0]);
+        const btns = ctx.inputs_list[0];
+        const pos = btns.findIndex(b => b.id.index === id.index);
+        if (pos < 0 || !figs[pos]) { return [dash_clientside.no_update, dash_clientside.no_update]; }
+        const fig = JSON.parse(JSON.stringify(figs[pos]));
+        fig.layout = Object.assign({}, fig.layout, {height: null, autosize: true});
+        if (fig.layout.title && fig.layout.title.font) { fig.layout.title.font.size = 18; }
+        return [shown, fig];
+    }
+    """ % __import__("json").dumps(MODAL_HIDDEN),
+    Output("modal-overlay", "style"),
+    Output("zoom-graph", "figure"),
+    Input({"type": "max-btn", "index": ALL}, "n_clicks"),
+    Input("close-modal-btn", "n_clicks"),
+    State({"type": "card-graph", "index": ALL}, "figure"),
+    prevent_initial_call=True,
+)
 
 
 # =========================
