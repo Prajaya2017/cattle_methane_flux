@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.tmp
+.ipynb_checkpoints/
+.spyproject/
+.DS_Store
+Thumbs.db
+desktop.ini

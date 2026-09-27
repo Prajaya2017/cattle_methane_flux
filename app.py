@@ -64,6 +64,9 @@ TABS = {
         "USTAR",         # friction velocity
         "TKE",           # turbulent kinetic energy
         "Bowen_ratio",
+        "CH4_mixratio",  # CH4 mixing ratio (TGA310)
+        "CO2_density",   # CO2 concentration (IRGASON)
+        "H2O_density",   # H2O concentration (IRGASON)
     ],
     "Meteorology": [
         ("Air & soil temperature (deg C)",
@@ -202,6 +205,11 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
         t = df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0
         lam = (2.501 - 0.00237 * t) * 1e6                     # J kg-1
         df["FH2O"] = df["LE"] / lam / 18.015 * 1e6           # mmol m-2 s-1
+
+    # Concentrations: 0 means the analyzer had no valid reading -> treat as missing
+    for c in ("CH4_mixratio", "CH4_density", "CO2_density", "H2O_density"):
+        if c in df.columns:
+            df.loc[df[c] <= 0, c] = np.nan
 
     # Wind direction offset (e.g. sonic mounted pointing the opposite way)
     if WD_COL in df.columns and WD_OFFSET_DEG:
