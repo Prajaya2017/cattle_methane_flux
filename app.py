@@ -316,7 +316,7 @@ def fmt_units(text):
     t = _re.sub(r"\bu(g|mol)(?=CH4|CO2|H2O|N2O)", "\u00b5\\1 ", t)      # ugCH4 -> \u00b5g CH4
     t = _re.sub(r"\b(m|n)?(g|mol)(?=CH4|CO2|H2O|N2O)", r"\1\2 ", t)      # mgCO2 -> mg CO2
     for a, b in _CHEM:
-        t = _re.sub(r"(?<![A-Za-z0-9_])" + a + r"(?![A-Za-z0-9])", b, t)
+        t = _re.sub(r"(?<![A-Za-z0-9_])" + a + r"(?![A-Za-z0-9_])", b, t)
     # unit exponents: m-2, s-1, m2, hour-1, kg m-1 s-2 ...
     t = _re.sub(r"(?<![A-Za-z0-9_\-])(m|s|kg|g|hour|h|d|mol|W|J)(-?\d)(?![\d_])",
                 lambda m: m.group(1) + "<sup>" + m.group(2).replace("-", "\u2212") + "</sup>", t)
@@ -790,9 +790,98 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# =========================
+# Custom "Add Plot" (like the TGA data monitor): pick variables, optional 2nd/3rd/4th y-axis
+# =========================
+CUSTOM_EXCLUDE = {TIME_COL, "RECORD"}
+AXIS_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
+BTN = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white", "cursor": "pointer",
+       "fontSize": "13px"}
+
+
+def custom_var_options(df: pd.DataFrame):
+    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and pd.api.types.is_numeric_dtype(df[c])
+            and df[c].notna().any()]
+    return [{"label": c, "value": c} for c in cols]
+
+
+def build_custom_spec(selected, y2, y3, y4):
+    """Same logic as the TGA monitor: axis variables are added to the plot if not already chosen."""
+    vars_ = list(selected or [])
+    for axis in (y2 or [], y3 or [], y4 or []):
+        for v in axis:
+            if v not in vars_:
+                vars_.append(v)
+    if not vars_:
+        return None
+    y2 = [v for v in (y2 or []) if v in vars_]
+    y3 = [v for v in (y3 or []) if v in vars_ and v not in y2]
+    y4 = [v for v in (y4 or []) if v in vars_ and v not in y2 and v not in y3]
+    return {"vars": vars_, "y2": y2, "y3": y3, "y4": y4}
+
+
+def make_custom_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
+    vars_ = [v for v in spec["vars"] if v in df.columns]
+    y2, y3, y4 = set(spec["y2"]), set(spec["y3"]), set(spec["y4"])
+    axis_of = {v: ("y4" if v in y4 else "y3" if v in y3 else "y2" if v in y2 else "y") for v in vars_}
+    used = [a for a in ("y", "y2", "y3", "y4") if a in axis_of.values()]
+    n_right = len(used) - 1
+    # plot area shrinks as axes are added; extra right-hand axes sit in the freed space
+    x_end = {0: 1.0, 1: 1.0, 2: 0.84, 3: 0.72}[n_right]
+    free_pos = {2: {"y3": 0.93}, 3: {"y3": 0.83, "y4": 0.95}}.get(n_right, {})
+
+    fig = go.Figure()
+    color_of = {v: PANEL_COLORS[i % len(PANEL_COLORS)] for i, v in enumerate(vars_)}
+    for v in vars_:
+        fig.add_trace(go.Scatter(
+            x=df[TIME_COL], y=df[v], mode="lines+markers", marker=dict(size=3),
+            line=dict(color=color_of[v]), name=v, yaxis=axis_of[v],
+            hovertemplate="%{x|%y/%m/%d %H:%M}<br>" + v + ": %{y}<extra></extra>",
+        ))
+
+    def ax_cfg(axis):
+        vs = [v for v in vars_ if axis_of[v] == axis]
+        col = color_of[vs[0]] if len(vs) == 1 else "#333"      # colour-code single-variable axes
+        return dict(title=dict(text=", ".join(format_title(v, units_map) for v in vs),
+                               font=dict(size=11, color=col)),
+                    tickfont=dict(size=10, color=col))
+
+    lay = {"yaxis": ax_cfg("y")}
+    for a in used[1:]:
+        cfg = {**ax_cfg(a), "overlaying": "y", "side": "right", "showgrid": False}
+        if a in free_pos:
+            cfg.update(anchor="free", position=free_pos[a])
+        lay["yaxis" + a[1:]] = cfg
+    fig.update_layout(**lay)
+
+    tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
+    fig.update_xaxes(type="date", tickmode="linear", tick0=tick0, dtick=dtick, tickformat=tickformat,
+                     tickangle=30, domain=[0, x_end], tickfont=dict(size=10))
+    fig.update_layout(
+        title=dict(text=" vs ".join(vars_), x=0.5, font=dict(size=14)),
+        height=380, margin=dict(l=60, r=40, t=70, b=50),
+        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom", font=dict(size=11)),
+    )
+    return fig
+
+
+def custom_section(df, specs, units_map, dtick, tickformat):
+    specs = [sp for sp in (specs or []) if any(v in df.columns for v in sp.get("vars", []))]
+    if not specs:
+        return None
+    cards = [plot_card(make_custom_figure(df, sp, units_map, dtick, tickformat), 1000 + i)
+             for i, sp in enumerate(specs)]
+    return html.Div(style={"marginBottom": "12px"}, children=[
+        html.Div("Added plots", style={"fontWeight": "bold", "color": "#1b4d3e", "margin": "6px 0"}),
+        html.Div(cards, style={"display": "grid", "gap": "10px",
+                               "gridTemplateColumns": "repeat(auto-fill, minmax(520px, 1fr))"}),
+    ])
+
+
 def serve_layout():
     """Built on every page load, so the date picker always reflects the latest data."""
     df, _ = load_data()
+    var_opts = custom_var_options(df) if not df.empty else []
     if df.empty:
         min_d = max_d = None
     else:
@@ -870,8 +959,33 @@ def serve_layout():
                         ],
                     ),
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
+                    html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
+                                style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
+                                       "fontWeight": "bold"}),
                 ],
             ),
+            html.Div(id="variable-panel", style={"display": "none"}, children=[
+                html.Div(style={"display": "grid", "gap": "10px", "alignItems": "center", "marginBottom": "10px",
+                                "gridTemplateColumns": "170px minmax(260px, 1.4fr) repeat(3, minmax(200px, 1fr))"},
+                         children=[
+                             html.Div("Create additional plot:", style={"fontWeight": "bold"}),
+                             dcc.Dropdown(id="all-variables-dropdown", options=var_opts, value=[], multi=True,
+                                          placeholder="Choose one or more variables"),
+                             dcc.Dropdown(id="secondary-y-dropdown", options=var_opts, value=[], multi=True,
+                                          placeholder="Variable for secondary Y-axis"),
+                             dcc.Dropdown(id="third-y-dropdown", options=var_opts, value=[], multi=True,
+                                          placeholder="Variable for third Y-axis"),
+                             dcc.Dropdown(id="fourth-y-dropdown", options=var_opts, value=[], multi=True,
+                                          placeholder="Variable for 4th axis"),
+                         ]),
+                html.Div(style={"display": "flex", "gap": "10px", "flexWrap": "wrap"}, children=[
+                    html.Button("Add Plot", id="add-plot-btn", n_clicks=0,
+                                style={**BTN, "border": "1px solid #2e8b57", "color": "#2e8b57"}),
+                    html.Button("Clear Added Plots", id="clear-selected-vars-btn", n_clicks=0,
+                                style={**BTN, "border": "1px solid #888"}),
+                ]),
+            ]),
+            dcc.Store(id="custom-specs", storage_type="session", data=[]),
             dcc.Tabs(id="tabs", value=SETUP_TAB,
                      style={"borderBottom": "3px solid #1b7f5a", "marginTop": "6px"}, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
@@ -981,6 +1095,49 @@ def refresh_dates(_n, start_date, end_date, old_max):
             REFRESH_MINUTES * 60 * 1000)
 
 
+PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "border": "1px solid #cfe0d8",
+               "borderRadius": "10px", "backgroundColor": "#f6fbf8"}
+
+
+@app.callback(
+    Output("variable-panel", "style"),
+    Output("toggle-variable-panel-btn", "style"),
+    Input("toggle-variable-panel-btn", "n_clicks"),
+    Input("tabs", "value"),
+)
+def toggle_variable_panel(n, tab_value):
+    """Add Plot panel: opened/closed by the button; only on the data tabs."""
+    btn = {**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a", "fontWeight": "bold"}
+    if tab_value == SETUP_TAB:
+        return {"display": "none"}, {**btn, "display": "none"}
+    return (PANEL_STYLE if (n or 0) % 2 == 1 else {"display": "none"}), btn
+
+
+@app.callback(
+    Output("custom-specs", "data"),
+    Output("all-variables-dropdown", "value"),
+    Output("secondary-y-dropdown", "value"),
+    Output("third-y-dropdown", "value"),
+    Output("fourth-y-dropdown", "value"),
+    Input("add-plot-btn", "n_clicks"),
+    Input("clear-selected-vars-btn", "n_clicks"),
+    State("all-variables-dropdown", "value"),
+    State("secondary-y-dropdown", "value"),
+    State("third-y-dropdown", "value"),
+    State("fourth-y-dropdown", "value"),
+    State("custom-specs", "data"),
+    prevent_initial_call=True,
+)
+def update_custom_specs(_add, _clear, sel, y2, y3, y4, specs):
+    from dash import ctx, no_update
+    if ctx.triggered_id == "clear-selected-vars-btn":
+        return [], [], [], [], []
+    spec = build_custom_spec(sel, y2, y3, y4)
+    if spec is None:
+        return no_update, no_update, no_update, no_update, no_update
+    return (specs or []) + [spec], [], [], [], []
+
+
 @app.callback(
     Output("tab-content", "children"),
     Input("tabs", "value"),
@@ -990,9 +1147,11 @@ def refresh_dates(_n, start_date, end_date, old_max):
     *[Input(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
     Input("wd-sector", "value"),
     Input("ustar-filter", "value"),
+    Input("custom-specs", "data"),
 )
 def render_tab(tab_value, start_date, end_date, _n, *args):
     nq = len(QC_FILTERS)
+    custom_specs = args[nq + 2] if len(args) > nq + 2 else []
     qc_limits = list(args[:nq])
     sector = args[nq] if len(args) > nq else None
     ustar = args[nq + 1] if len(args) > nq + 1 else "none"
@@ -1025,6 +1184,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
                             style={"textAlign": "center", "marginTop": "30px"})
         return html.Div([
             html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+            custom_section(dfm, custom_specs, units_map, dtick, tickformat),
             panel_grid(dfm, vars_list, units_map, dtick, tickformat, title_range),
         ])
 
@@ -1048,6 +1208,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
         html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+        custom_section(dfq, custom_specs, units_map, dtick, tickformat),
         panel_grid(dfq, vars_list, units_map, dtick, tickformat, title_range),
         html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "marginTop": "14px"},
                  children=[
