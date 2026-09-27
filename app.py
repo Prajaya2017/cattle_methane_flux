@@ -499,24 +499,24 @@ TAB_STYLE = {
     "fontWeight": "bold",
     "height": "34px",
     "lineHeight": "24px",
-    "border": "1px solid #cfe0d8",
+    "border": "1px solid #e6d3a3",
     "borderBottom": "none",
     "borderRadius": "12px 12px 0 0",
-    "background": "linear-gradient(180deg, #f4faf7 0%, #e3f0ea 100%)",
-    "color": "#2f6b55",
+    "background": "linear-gradient(180deg, #fffaf0 0%, #f7ebc9 100%)",
+    "color": "#8a6508",
     "marginRight": "6px",
 }
 TAB_SELECTED_STYLE = {
     **TAB_STYLE,
-    "background": "linear-gradient(135deg, #1b7f5a 0%, #2fa36f 100%)",
+    "background": "linear-gradient(135deg, #a8770a 0%, #d19a1a 100%)",
     "color": "white",
-    "border": "1px solid #1b7f5a",
-    "boxShadow": "0 -2px 8px rgba(27,127,90,0.25)",
+    "border": "1px solid #a8770a",
+    "boxShadow": "0 -2px 8px rgba(168,119,10,0.30)",
 }
 
 
 # QC grade filters shown as "< n" (keeps grades 1 .. n-1); value = highest grade kept
-QC_OPTIONS = [{"label": "All", "value": "all"}] + [
+QC_OPTIONS = [{"label": "None", "value": "all"}] + [
     {"label": f"< {g + 1}", "value": g} for g in range(1, 9)]
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "14px", "flexWrap": "wrap"}
@@ -879,6 +879,11 @@ def custom_section(df, specs, units_map, dtick, tickformat):
     ])
 
 
+SAVE_BTN_STYLE = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white",
+                  "cursor": "pointer", "fontSize": "13px", "fontWeight": "bold",
+                  "border": "1px solid #a8770a", "color": "#a8770a"}
+
+
 def serve_layout():
     """Built on every page load, so the date picker always reflects the latest data."""
     df, _ = load_data()
@@ -964,9 +969,14 @@ def serve_layout():
                         ],
                     ),
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
-                    html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
-                                style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
-                                       "fontWeight": "bold"}),
+                    html.Div(style={"display": "flex", "gap": "10px", "justifyContent": "center"}, children=[
+                        html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
+                                    style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
+                                           "fontWeight": "bold"}),
+                        html.Button("\u2B07 Save plots (PDF)", id="save-pdf-btn", n_clicks=0,
+                                    title="Save all plots on this tab to a PDF file",
+                                    style=SAVE_BTN_STYLE),
+                    ]),
                 ],
             ),
             html.Div(id="variable-panel", style={"display": "none"}, children=[
@@ -992,7 +1002,7 @@ def serve_layout():
             ]),
             dcc.Store(id="custom-specs", storage_type="session", data=[]),
             dcc.Tabs(id="tabs", value=SETUP_TAB,
-                     style={"borderBottom": "3px solid #1b7f5a", "marginTop": "6px"}, children=[
+                     style={"borderBottom": "3px solid #a8770a", "marginTop": "6px"}, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
                 for n in [SETUP_TAB] + tab_names
             ]),
@@ -1039,6 +1049,7 @@ RANGE_ROW_STYLE = {
     Output("last-updated", "style"),
     Output("flux-controls", "style"),
     Output("wd-controls", "style"),
+    Output("save-pdf-btn", "style"),
     Input("tabs", "value"),
 )
 def toggle_range(tab_value):
@@ -1048,8 +1059,8 @@ def toggle_range(tab_value):
     fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, **hide}
     wd = WD_CONTROLS_STYLE if tab_value in (FLUX_TAB, MET_TAB) else {**WD_CONTROLS_STYLE, **hide}
     if tab_value == SETUP_TAB:
-        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd
-    return RANGE_ROW_STYLE, lu, fc, wd
+        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd, {**SAVE_BTN_STYLE, **hide}
+    return RANGE_ROW_STYLE, lu, fc, wd, SAVE_BTN_STYLE
 
 
 @app.callback(
@@ -1197,7 +1208,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
-    notes = [f"{lab}: {'all' if lim in (None, 'all') else ('< ' + str(int(lim) + 1))}"
+    notes = [f"{lab}: {'none' if lim in (None, 'all') else ('< ' + str(int(lim) + 1))}"
              for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
              f"u*: {'none' if ustar in (None, 'none') else '>= ' + str(ustar) + ' m/s'}",
              f"Wind direction: {sectors_label(sector)}",
@@ -1223,6 +1234,21 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
                  ]),
         html.Div(plot_card(make_diurnal(dfq), n + 4), style={"marginTop": "10px"}),
     ])
+
+
+# "Done" closes the wind-direction pop-up (runs in the browser; works even without assets/wd_dropdown.js)
+app.clientside_callback(
+    """
+    function(n) {
+        var d = document.getElementById("wd-details");
+        if (d && n) { d.open = false; d.removeAttribute("open"); }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("wd-done", "title"),
+    Input("wd-done", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 # Maximize: copy the clicked card's figure into the pop-up (runs in the browser, no server call)
