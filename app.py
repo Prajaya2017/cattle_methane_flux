@@ -800,8 +800,8 @@ BTN = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white",
 
 
 def custom_var_options(df: pd.DataFrame):
-    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and pd.api.types.is_numeric_dtype(df[c])
-            and df[c].notna().any()]
+    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and not c.upper().endswith("_QC")
+            and pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any()]
     return [{"label": c, "value": c} for c in cols]
 
 
