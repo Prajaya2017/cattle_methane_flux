@@ -519,11 +519,11 @@ TAB_SELECTED_STYLE = {
 QC_OPTIONS = [{"label": "None", "value": "all"}] + [
     {"label": f"< {g + 1}", "value": g} for g in range(1, 9)]
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
-                       "marginLeft": "14px", "flexWrap": "wrap"}
+                       "marginLeft": "6px", "flexWrap": "wrap"}
 WD_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
-                     "marginLeft": "14px"}
+                     "marginLeft": "6px"}
 WD_SUMMARY_STYLE = {"cursor": "pointer", "listStyle": "none", "border": "1px solid #ccc",
-                    "borderRadius": "4px", "padding": "6px 10px", "minWidth": "150px",
+                    "borderRadius": "4px", "padding": "6px 10px", "minWidth": "90px",
                     "fontSize": "14px", "backgroundColor": "white", "userSelect": "none"}
 WD_PANEL_STYLE = {"position": "absolute", "top": "38px", "left": "0", "zIndex": 1000,
                   "backgroundColor": "white", "border": "1px solid #ccc", "borderRadius": "4px",
@@ -919,7 +919,7 @@ def serve_layout():
                             "flexWrap": "wrap",
                         },
                         children=[
-                            html.Span("Range:", style={"fontSize": "16px"}),
+                            html.Span("Range:", style={"fontSize": "14px"}),
                             dcc.DatePickerRange(
                                 id="dp-range",
                                 min_date_allowed=min_d,
@@ -933,11 +933,11 @@ def serve_layout():
                                 *[el for qid, lab, _c, _q in QC_FILTERS for el in (
                                     html.Span(f"{lab}:", style={"fontSize": "14px"}),
                                     dcc.Dropdown(id=qid, options=QC_OPTIONS, value="all",
-                                                 clearable=False, style={"width": "100px"}),
+                                                 clearable=False, style={"width": "84px"}),
                                 )],
                                 html.Span("u*:", style={"fontSize": "14px", "marginLeft": "6px"}),
                                 dcc.Dropdown(id="ustar-filter", options=USTAR_OPTIONS, value="none",
-                                             clearable=False, style={"width": "120px"}),
+                                             clearable=False, style={"width": "92px"}),
                             ]),
                             html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
@@ -966,17 +966,16 @@ def serve_layout():
                                     ]),
                                 ]),
                             ]),
+                            # Buttons sit on the same row as Range / QC / u* / Wind direction
+                            html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
+                                        style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
+                                               "fontWeight": "bold"}),
+                            html.Button("\u2B07 Save plots (PDF)", id="save-pdf-btn", n_clicks=0,
+                                        title="Save all plots on this tab to a PDF file",
+                                        style=SAVE_BTN_STYLE),
                         ],
                     ),
                     html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
-                    html.Div(style={"display": "flex", "gap": "10px", "justifyContent": "center"}, children=[
-                        html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
-                                    style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
-                                           "fontWeight": "bold"}),
-                        html.Button("\u2B07 Save plots (PDF)", id="save-pdf-btn", n_clicks=0,
-                                    title="Save all plots on this tab to a PDF file",
-                                    style=SAVE_BTN_STYLE),
-                    ]),
                 ],
             ),
             html.Div(id="variable-panel", style={"display": "none"}, children=[
@@ -1028,6 +1027,12 @@ def serve_layout():
         ],
     )
 
+
+# Compact date picker so Range, filters and buttons fit on one row
+app.index_string = app.index_string.replace("</head>", """<style>
+#range-row .dash-datepicker-input{font-size:14px}
+#range-row .dash-dropdown{font-size:14px}
+</style></head>""")
 
 app.layout = serve_layout
 
