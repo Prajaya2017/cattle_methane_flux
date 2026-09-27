@@ -515,8 +515,9 @@ TAB_SELECTED_STYLE = {
 }
 
 
+# QC grade filters shown as "< n" (keeps grades 1 .. n-1); value = highest grade kept
 QC_OPTIONS = [{"label": "All", "value": "all"}] + [
-    {"label": f"<= {g}", "value": g} for g in range(1, 10)]
+    {"label": f"< {g + 1}", "value": g} for g in range(1, 9)]
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "14px", "flexWrap": "wrap"}
 WD_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
@@ -935,7 +936,7 @@ def serve_layout():
                             ]),
                             html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
-                                html.Details(style={"position": "relative"}, children=[
+                                html.Details(id="wd-details", style={"position": "relative"}, children=[
                                     html.Summary(id="wd-summary", children="All ▾",
                                                  style=WD_SUMMARY_STYLE),
                                     html.Div(style=WD_PANEL_STYLE, children=[
@@ -945,6 +946,10 @@ def serve_layout():
                                                         style=WD_BTN_STYLE),
                                             html.Button("Clear", id="wd-none", n_clicks=0,
                                                         style=WD_BTN_STYLE),
+                                            html.Button("Done", id="wd-done", n_clicks=0,
+                                                        style={**WD_BTN_STYLE, "marginLeft": "auto",
+                                                               "fontWeight": "bold", "color": "#1b7f5a",
+                                                               "border": "1px solid #1b7f5a"}),
                                         ]),
                                         dcc.Checklist(
                                             id="wd-sector",
@@ -1106,9 +1111,9 @@ PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "bo
     Input("tabs", "value"),
 )
 def toggle_variable_panel(n, tab_value):
-    """Add Plot panel: opened/closed by the button; only on the data tabs."""
+    """Add Plot panel: opened/closed by the button; only on the Fluxes and Turbulence tab."""
     btn = {**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a", "fontWeight": "bold"}
-    if tab_value == SETUP_TAB:
+    if tab_value != FLUX_TAB:                      # Add Plot only on the Fluxes and Turbulence tab
         return {"display": "none"}, {**btn, "display": "none"}
     return (PANEL_STYLE if (n or 0) % 2 == 1 else {"display": "none"}), btn
 
@@ -1184,7 +1189,6 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
                             style={"textAlign": "center", "marginTop": "30px"})
         return html.Div([
             html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-            custom_section(dfm, custom_specs, units_map, dtick, tickformat),
             panel_grid(dfm, vars_list, units_map, dtick, tickformat, title_range),
         ])
 
@@ -1193,7 +1197,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
-    notes = [f"{lab}: {'all' if lim in (None, 'all') else '<= ' + str(lim)}"
+    notes = [f"{lab}: {'all' if lim in (None, 'all') else ('< ' + str(int(lim) + 1))}"
              for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
              f"u*: {'none' if ustar in (None, 'none') else '>= ' + str(ustar) + ' m/s'}",
              f"Wind direction: {sectors_label(sector)}",
