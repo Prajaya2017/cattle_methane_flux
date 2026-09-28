@@ -65,8 +65,8 @@ TABS = {
         "TKE",           # turbulent kinetic energy
         "Bowen_ratio",
         "CH4_mixratio",  # CH4 mixing ratio (TGA310)
-        "CO2_density",   # CO2 concentration (IRGASON)
-        "H2O_density",   # H2O concentration (IRGASON)
+        "CO2_mixratio",  # CO2 dry mixing ratio (from IRGASON density, TA, PA)
+        "H2O_mixratio",  # H2O dry mixing ratio (from IRGASON density, TA, PA)
     ],
     "Meteorology": [
         ("Air & soil temperature (deg C)",
@@ -96,9 +96,12 @@ LE_COL, LE_QC_COL = "LE", "LE_QC"                   # W m-2
 H_COL, H_QC_COL = "H", "H_QC"                       # W m-2
 
 USTAR_COL = "USTAR"
+# u* filter: removes weak-turbulence half-hours (u* <= threshold)
 USTAR_OPTIONS = [{"label": "None", "value": "none"},
-                 {"label": ">= 0.1 m/s", "value": 0.1},
-                 {"label": ">= 0.2 m/s", "value": 0.2}]
+                 {"label": "\u2264 0.1", "value": 0.1},
+                 {"label": "\u2264 0.2", "value": 0.2}]
+# Variables blanked by the u* filter (removed points are drawn in grey on their plots)
+USTAR_EXTRA_COLS = ["USTAR", "TKE", "CH4_mixratio", "CO2_mixratio", "H2O_mixratio"]
 ET_COL = "ET"
 CH4_CONC_COL = "CH4_mixratio"          # nmol mol-1 (ppb)
 CO2_DENS_COL = "CO2_density"           # mg m-3 -> converted to ppm with TA and PA
@@ -210,6 +213,15 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
     for c in ("CH4_mixratio", "CH4_density", "CO2_density", "H2O_density"):
         if c in df.columns:
             df.loc[df[c] <= 0, c] = np.nan
+
+    # CO2 and H2O dry mixing ratios from IRGASON densities (ideal gas, TA and PA)
+    if {"CO2_density", "H2O_density", "PA"} <= set(df.columns):
+        t_k = (df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0) + 273.15
+        n_air = df["PA"] * 1000 / (8.314 * t_k)               # mol m-3 (moist air)
+        n_h2o = df["H2O_density"] / 18.015                    # mol m-3
+        n_dry = n_air - n_h2o
+        df["CO2_mixratio"] = df["CO2_density"] / 44.01 * 1000 / n_dry   # umol mol-1
+        df["H2O_mixratio"] = n_h2o * 1000 / n_dry                       # mmol mol-1
 
     # Wind direction offset (e.g. sonic mounted pointing the opposite way)
     if WD_COL in df.columns and WD_OFFSET_DEG:
@@ -393,6 +405,14 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
         ))
         if col in Y_RANGES:
             fig.update_yaxes(range=Y_RANGES[col])
+        rm = RM_PREFIX + col
+        if rm in df.columns and df[rm].notna().any():         # points removed by the u* filter
+            fig.add_trace(go.Scatter(
+                x=df[TIME_COL], y=df[rm], mode="markers",
+                marker=dict(size=4, color="rgba(150,150,150,0.8)", symbol="x"),
+                name=f"removed (u* \u2264 {df.attrs.get('ustar', '')})", showlegend=True,
+                hovertemplate="%{x|%y/%m/%d %H:%M}<br>removed: %{y}<extra></extra>",
+            ))
     tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
     fig.update_xaxes(type="date", tickmode="linear", tick0=tick0, dtick=dtick,
                      tickformat=tickformat, tickangle=30, tickfont=dict(size=10))
@@ -447,7 +467,8 @@ def load_data(force: bool = False):
         if force or age > max_age:
             try:
                 text = fetch_toa5_text_from_github()
-                _DATA["units"] = {**read_units_map_from_toa5_text(text), "FH2O": "mmol m-2 s-1"}
+                _DATA["units"] = {**read_units_map_from_toa5_text(text), "FH2O": "mmol m-2 s-1",
+                                  "CO2_mixratio": "umolCO2 mol-1", "H2O_mixratio": "mmolH2O mol-1"}
                 _DATA["df"] = read_toa5_df_from_text(text)
                 _DATA["error"] = ""
                 df = _DATA["df"]
@@ -576,9 +597,12 @@ def sectors_label(sectors) -> str:
     return ", ".join(k.split()[0] for k in order)
 
 
+RM_PREFIX = "_ustar_removed_"
+
+
 def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.DataFrame:
     """For each flux, QC grade <= limit keeps the value (worse grades set to NaN);
-    u* filter blanks all fluxes when USTAR < threshold (weak turbulence);
+    u* filter blanks fluxes, u*, TKE and mixing ratios when USTAR <= threshold (weak turbulence);
     sector keeps only the selected wind directions."""
     d = df.copy()
     for (_id, _lab, col, qc_col), lim in zip(QC_FILTERS, qc_limits):
@@ -586,8 +610,13 @@ def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.Data
             cols = [col, "FH2O"] if col == LE_COL and "FH2O" in d else [col]
             d.loc[~(d[qc_col] <= lim), cols] = float("nan")
     if ustar not in (None, "none") and USTAR_COL in d:
-        flux_cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "FH2O", "TAU", "Bowen_ratio"] if c in d]
-        d.loc[~(d[USTAR_COL] >= float(ustar)), flux_cols] = float("nan")
+        cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "FH2O", "TAU", "Bowen_ratio"]
+                + USTAR_EXTRA_COLS if c in d]
+        low = d[USTAR_COL] <= float(ustar)                 # weak turbulence -> removed
+        for c in cols:                                      # keep removed values to show in grey
+            d[RM_PREFIX + c] = d[c].where(low)
+        d.loc[low | d[USTAR_COL].isna(), cols] = float("nan")
+        d.attrs["ustar"] = float(ustar)
     return filter_wd(d, sector)
 
 
@@ -704,7 +733,7 @@ def make_fch4_surface(d: pd.DataFrame) -> go.Figure:
     Each grid point is a Gaussian-weighted mean of nearby half-hours
     (sigma 30 deg in direction, 1.5 h in time, both circular); areas with no
     nearby data are left blank. Dots = measured half-hours."""
-    title = "FCH4 by wind direction \u00d7 time of day (smoothed)"
+    title = "Mean CH\u2084 flux by wind direction and hour of day"
     if WD_COL not in d or FCH4_COL not in d:
         return _empty_fig(title)
     x = d[[TIME_COL, WD_COL, FCH4_COL]].dropna()
@@ -1223,7 +1252,8 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
     notes = [f"{lab}: {'none' if lim in (None, 'all') else ('< ' + str(int(lim) + 1))}"
              for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
-             f"u*: {'none' if ustar in (None, 'none') else '>= ' + str(ustar) + ' m/s'}",
+             (f"u*: none" if ustar in (None, 'none') else
+              f"u* \u2264 {ustar} m/s removed ({int((dff[USTAR_COL] <= float(ustar)).sum()) if USTAR_COL in dff else 0} half-hours)"),
              f"Wind direction: {sectors_label(sector)}",
              f"{n_records(dfq)} of {len(dff)} records",
              "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
