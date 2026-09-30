@@ -5,8 +5,9 @@ Dash app: CSFlux (TGA310 methane EC) dashboard.
 - Reads Cattle_Experiment_Eagle_TGA310_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
 - Plots ONLY main flux and meteorological variables
   (no QC flags, no SIGMA/statistics, no sample counts, no diagnostics)
-- Tabs "Site and Setup", "Fluxes and Turbulence" (fluxes, turbulence, mixing ratios and meteorology)
-  and "TGAMon" (TGA310 health table), grid of subplots, calendar date-range picker
+- Tabs "Site and Setup", "Flux and Meteorology" (fluxes, turbulence, mixing ratios and meteorology)
+  (a "TGAMon" tab for the TGA310 health table is built in; set ENABLE_TGAMON = True to show it),
+  grid of subplots, calendar date-range picker
 - Data source: the LoggerNet files in C:\Campbellsci\LoggerNet\Data when they exist (VS Code on the
   LoggerNet PC), otherwise GitHub (Render)
 - If start_date == end_date, shows the FULL single day (00:00:00 to 23:59:59.999999)
@@ -64,7 +65,7 @@ ROW_HEIGHT_PX = 230
 
 # Main variables only, grouped into tabs (edit to add/remove)
 TABS = {
-    "Fluxes and Turbulence": [
+    "Flux and Meteorology": [
         "FCH4_mass",     # CH4 flux
         "FC_mass",       # CO2 flux
         "LE",            # latent heat flux
@@ -98,9 +99,11 @@ WD_COL = "WD"
 WD_OFFSET_DEG = 180
 WS_COL = "WS"
 
-FLUX_TAB = "Fluxes and Turbulence"
+FLUX_TAB = "Flux and Meteorology"
+OLD_FLUX_TABS = ("Fluxes and Turbulence",)   # earlier names; plots saved under them map here
 MET_TAB = "Meteorology"            # old tab (merged into FLUX_TAB); kept so saved plots still map
 TGAMON_TAB = "TGAMon"
+ENABLE_TGAMON = False              # True = show the TGAMon tab (TGA310 health table)
 
 # ---- TGAMon tab (TGA310 health / diagnostics table) ----
 TGAMON_DISPLAY_OPTIONS = [{"label": "30 min", "value": "30min"},
@@ -1504,7 +1507,7 @@ def make_custom_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
 def spec_home(sp) -> str:
     """Tab an added plot is shown on (no tab = flux tab; the old Meteorology tab is now the flux tab)."""
     t = sp.get("tab", FLUX_TAB)
-    return FLUX_TAB if t == MET_TAB else t
+    return FLUX_TAB if (t == MET_TAB or t in OLD_FLUX_TABS) else t
 
 
 def specs_for_tab(specs, tab):
@@ -1666,7 +1669,7 @@ def serve_layout():
             dcc.Tabs(id="tabs", value=SETUP_TAB,
                      style={"borderBottom": "3px solid #a8770a", "marginTop": "6px"}, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
-                for n in [SETUP_TAB] + tab_names + [TGAMON_TAB]
+                for n in [SETUP_TAB] + tab_names + ([TGAMON_TAB] if ENABLE_TGAMON else [])
             ]),
             html.Div(id="tab-content", style={"marginTop": "8px"}),
             # Pop-up for a maximized plot
@@ -1770,7 +1773,7 @@ def refresh_dates(_n, start_date, end_date, old_max):
 
     new_min = df[TIME_COL].min().date()
     new_max = df[TIME_COL].max().date()
-    tg = load_tgamon()[0]                      # let the picker reach TGAMon-only days too
+    tg = load_tgamon()[0] if ENABLE_TGAMON else pd.DataFrame()   # picker also covers TGAMon days
     if not tg.empty:
         new_min = min(new_min, tg[TIME_COL].min().date())
         new_max = max(new_max, tg[TIME_COL].max().date())
@@ -1796,7 +1799,7 @@ PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "bo
     Input("tabs", "value"),
 )
 def toggle_variable_panel(n, tab_value):
-    """Add Plot panel: opened/closed by the button; on the Fluxes and Turbulence and TGAMon tabs."""
+    """Add Plot panel: opened/closed by the button; on the Flux and Meteorology and TGAMon tabs."""
     btn = {**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a", "fontWeight": "bold"}
     if tab_value not in (FLUX_TAB, TGAMON_TAB):    # Add Plot on the flux and TGAMon tabs
         return {"display": "none"}, {**btn, "display": "none"}
@@ -1850,7 +1853,7 @@ def configure_plot_type(ptype, tab_value=None):
     """Relabel / show / hide the 4 variable dropdowns to match the selected plot type;
     variables come from the TGAMon file on the TGAMon tab, else from CSFlux."""
     fields = PLOT_TYPE_FIELDS.get(ptype or "ts", PLOT_TYPE_FIELDS["ts"])
-    df = load_tgamon()[0] if tab_value == TGAMON_TAB else load_data()[0]
+    df = load_tgamon()[0] if (ENABLE_TGAMON and tab_value == TGAMON_TAB) else load_data()[0]
     var_opts = custom_var_options(df) if not df.empty else []
     styles, labels, multis, holders, opts, vals = [], [], [], [], [], []
     for f in fields:
@@ -1886,7 +1889,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     ustar = args[nq + 1] if len(args) > nq + 1 else "none"
     if tab_value == SETUP_TAB:
         return setup_layout()
-    if tab_value == TGAMON_TAB:
+    if tab_value == TGAMON_TAB and ENABLE_TGAMON:
         return tgamon_content(start_date, end_date, tgamon_display, custom_specs)
 
     df, units_map = load_data()
