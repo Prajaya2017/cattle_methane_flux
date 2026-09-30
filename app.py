@@ -5,7 +5,10 @@ Dash app: CSFlux (TGA310 methane EC) dashboard.
 - Reads Cattle_Experiment_Eagle_TGA310_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
 - Plots ONLY main flux and meteorological variables
   (no QC flags, no SIGMA/statistics, no sample counts, no diagnostics)
-- Tabs "Site and Setup" (site photos + descriptions), "Fluxes and Turbulence" and "Meteorology", grid of subplots, calendar date-range picker
+- Tabs "Site and Setup", "Fluxes and Turbulence" (fluxes, turbulence, mixing ratios and meteorology)
+  and "TGAMon" (TGA310 health table), grid of subplots, calendar date-range picker
+- Data source: the LoggerNet files in C:\Campbellsci\LoggerNet\Data when they exist (VS Code on the
+  LoggerNet PC), otherwise GitHub (Render)
 - If start_date == end_date, shows the FULL single day (00:00:00 to 23:59:59.999999)
 - Duplicate / out-of-order records are removed (sorted by TIMESTAMP)
 - Render-ready: start with  gunicorn app:server
@@ -45,6 +48,14 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME
 # Direct file download: not subject to the GitHub API rate limit (60 requests/hour per IP)
 GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{FILENAME}"
 
+# Local LoggerNet files: used automatically when they exist (e.g. running app.py in VS Code
+# on the LoggerNet PC). On Render these paths don't exist, so the GitHub copies are used.
+LOGGERNET_DATA_DIR = r"C:\Campbellsci\LoggerNet\Data"
+LOCAL_CSFLUX_FILE = os.path.join(LOGGERNET_DATA_DIR, FILENAME)
+TGAMON_FILENAME = "Cattle_Experiment_Eagle_TGA310_TGAMonitor.dat"
+LOCAL_TGAMON_FILE = os.path.join(LOGGERNET_DATA_DIR, TGAMON_FILENAME)
+TGAMON_GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{TGAMON_FILENAME}"
+
 # How often to re-download data from GitHub (minutes)
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "10"))
 
@@ -67,8 +78,7 @@ TABS = {
         "CH4_mixratio",  # CH4 mixing ratio (TGA310)
         "CO2_mixratio",  # CO2 dry mixing ratio (from IRGASON density, TA, PA)
         "H2O_mixratio",  # H2O dry mixing ratio (from IRGASON density, TA, PA)
-    ],
-    "Meteorology": [
+        # --- meteorology (formerly its own tab) ---
         ("Air & soil temperature (deg C)",
          [("TA_1_1_1", "Air temp"), ("TS_1_1_1", "Soil temp")]),   # one plot, two lines
         "RH_1_1_1",      # relative humidity
@@ -89,7 +99,73 @@ WD_OFFSET_DEG = 180
 WS_COL = "WS"
 
 FLUX_TAB = "Fluxes and Turbulence"
-MET_TAB = "Meteorology"
+MET_TAB = "Meteorology"            # old tab (merged into FLUX_TAB); kept so saved plots still map
+TGAMON_TAB = "TGAMon"
+
+# ---- TGAMon tab (TGA310 health / diagnostics table) ----
+TGAMON_DISPLAY_OPTIONS = [{"label": "30 min", "value": "30min"},
+                          {"label": "Original (10 s)", "value": "raw"}]
+TGAMON_RAW_MAX_DAYS = 3
+TGAMON_PLOTS_PER_ROW = 6           # plots per row on the TGAMon tab            # longer ranges switch to 30 min automatically
+# Default TGAMon plots (from the TGAMonitr dashboard). Plots whose variables are not in the
+# file are skipped. axis_mode: single | secondary | triple
+TGAMON_PLOT_SPECS = [
+    {"vars": ["CH4"], "title": "CH4", "axis_mode": "single"},
+    {"vars": ["N2O"], "title": "N2O", "axis_mode": "single"},
+    {"vars": ["currnt_lasr"], "title": "currnt_lasr", "axis_mode": "single"},
+    {"vars": ["tmpr_lasr"], "title": "tmpr_lasr", "axis_mode": "single"},
+    {"vars": ["duty_lasr_tec"], "title": "duty_lasr_tec", "axis_mode": "single"},
+    {"vars": ["volt_lasr"], "title": "volt_lasr", "axis_mode": "single"},
+    {"vars": ["diag_tga"], "title": "diag_tga", "axis_mode": "single"},
+    {"vars": ["warng_maint_tga"], "title": "warng_maint_tga", "axis_mode": "single"},
+    {"vars": ["sig_ref_det", "sig_smp_det"], "title": "Detector signals",
+     "axis_mode": "secondary", "secondary_y": ["sig_smp_det"]},
+    {"vars": ["tmpr_ref_det", "tmpr_smp_det"], "title": "Detector temperatures", "axis_mode": "single"},
+    {"vars": ["duty_ref_det_tec", "duty_smp_det_tec"], "title": "Detector duty cycles",
+     "axis_mode": "secondary", "secondary_y": ["duty_smp_det_tec"]},
+    {"vars": ["trasmtnc_ref_det", "trasmtnc_smp_det"], "title": "Detector transmittance",
+     "axis_mode": "secondary", "secondary_y": ["trasmtnc_smp_det"]},
+    {"vars": ["tmpr_shroud_1", "tmpr_shroud_2", "tmpr_shroud_3", "tmpr_shroud_4",
+              "tmpr_shroud_5", "tmpr_shroud_6", "tmpr_laser", "tmpr_det"],
+     "title": "Optical bench temperatures", "axis_mode": "single"},
+    {"vars": ["duty_shroud_tec_1", "duty_shroud_tec_2", "duty_shroud_tec_3", "duty_shroud_tec_4",
+              "duty_shroud_tec_5", "duty_shroud_tec_6", "duty_laser_tec", "duty_det_tec"],
+     "title": "TEC duty cycles", "axis_mode": "single"},
+    {"vars": ["tmpr_shroud_ht_snk_1", "tmpr_shroud_ht_snk_2", "tmpr_shroud_ht_snk_3",
+              "tmpr_shroud_ht_snk_4", "tmpr_shroud_ht_snk_5", "tmpr_shroud_ht_snk_6",
+              "tmpr_laser_ht_snk", "tmpr_dect_ht_snk"],
+     "title": "Heat sink temperatures", "axis_mode": "single"},
+    {"vars": ["press_smp_flow", "press_ref_flow", "press_vrtx_bypss", "press_vrtx_thp"],
+     "title": "Flow path pressures", "axis_mode": "single"},
+    {"vars": ["tmpr_smp_flow", "tmpr_ref_flow", "tmpr_vrtx_bypss", "tmpr_vrtx_thp"],
+     "title": "Flow path temperatures", "axis_mode": "single"},
+    {"vars": ["duty_ref_valv", "duty_smp_valv"], "title": "Valve duty cycles",
+     "axis_mode": "secondary", "secondary_y": ["duty_smp_valv"]},
+    {"vars": ["volt_tga_pwr", "current_tga", "pwr_tga"], "title": "System voltage, current, power",
+     "axis_mode": "triple", "secondary_y": ["current_tga"], "third_y": ["pwr_tga"]},
+    {"vars": ["press_pmp_inlt", "press_pmp_stg_2"], "title": "Pump pressures", "axis_mode": "single"},
+    {"vars": ["tmpr_pmp_1A", "tmpr_pmp_2", "tmpr_pmp_3", "tmpr_pmp_manfld", "tmpr_pmp_1B", "tmpr_pmp_inlt"],
+     "title": "Pump temperatures", "axis_mode": "single"},
+    {"vars": ["duty_pmp_1", "duty_pmp_2", "duty_pmp_3"], "title": "Pump duty cycles", "axis_mode": "single"},
+    {"vars": ["spd_pmp_1", "spd_pmp_2", "spd_pmp_3"], "title": "Pump tachometers", "axis_mode": "single"},
+    {"vars": ["press_ref_inlt"], "title": "press_ref_inlt", "axis_mode": "single"},
+    {"vars": ["tmpr_ref_inlt"], "title": "tmpr_ref_inlt", "axis_mode": "single"},
+    {"vars": ["duty_pump_htr", "duty_valv_htr"], "title": "Pump and valve heater duty", "axis_mode": "single"},
+    {"vars": ["press_smp_cell", "press_smp_cell_thp"], "title": "Sample cell pressures",
+     "axis_mode": "secondary", "secondary_y": ["press_smp_cell_thp"]},
+    {"vars": ["tmpr_smp_cell", "tmpr_smp_cell_thp"], "title": "Sample cell temperatures", "axis_mode": "single"},
+    {"vars": ["flow_ref", "flow_smp"], "title": "Reference and sample flow",
+     "axis_mode": "secondary", "secondary_y": ["flow_smp"]},
+    {"vars": ["flow_vrtx"], "title": "flow_vrtx", "axis_mode": "single"},
+    {"vars": ["press_inlt_fltr", "press_outlt_fltr"], "title": "Filter pressures", "axis_mode": "single"},
+    {"vars": ["tmpr_inlt_fltr", "tmpr_outlt_fltr"], "title": "Filter temperatures", "axis_mode": "single"},
+    {"vars": ["diff_press_fltr"], "title": "diff_press_fltr", "axis_mode": "single"},
+    {"vars": ["press_vrtx_bypss"], "title": "press_vrtx_bypss", "axis_mode": "single"},
+    {"vars": ["press_tga_housng"], "title": "press_tga_housng", "axis_mode": "single"},
+    {"vars": ["RH_housg"], "title": "RH_housg", "axis_mode": "single"},
+    {"vars": ["RH_smp_cell_thp"], "title": "RH_smp_cell_thp", "axis_mode": "single"},
+    {"vars": ["RH_vrtx_thp"], "title": "RH_vrtx_thp", "axis_mode": "single"},
+]
 FCH4_COL, FCH4_QC_COL = "FCH4_mass", "FCH4_QC"     # ugCH4 m-2 s-1
 FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
 LE_COL, LE_QC_COL = "LE", "LE_QC"                   # W m-2
@@ -144,6 +220,15 @@ def fetch_toa5_text_from_github() -> str:
     (no API rate limit, no login). If a GITHUB_TOKEN environment variable is set on
     Render, the authenticated API (5,000 requests/hour) is used as a fallback.
     """
+    # Local file first: CSFLUX_LOCAL_FILE if set, else the LoggerNet file if it exists (VS Code on the
+    # LoggerNet PC). On Render neither exists, so the GitHub copy is downloaded.
+    local = os.environ.get("CSFLUX_LOCAL_FILE", "").strip().strip('"')
+    if not local and os.path.isfile(LOCAL_CSFLUX_FILE):
+        local = LOCAL_CSFLUX_FILE
+    if local:
+        with open(local, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
     r = requests.get(GITHUB_RAW_URL, params={"t": int(time.time() // 60)},  # bust CDN cache ~1 min
                      headers={"Cache-Control": "no-cache"}, timeout=60)
 
@@ -178,7 +263,7 @@ def read_units_map_from_toa5_text(toa5_text: str) -> dict[str, str]:
     units = pd.read_csv(StringIO(lines[2].strip()), header=None).iloc[0].tolist()
 
     cols = [str(c).strip().strip('"').lstrip("﻿") for c in cols]
-    units = [str(u).strip().strip('"') for u in units]
+    units = ["" if pd.isna(u) else str(u).strip().strip('"') for u in units]
     return dict(zip(cols, units))
 
 
@@ -386,8 +471,30 @@ PANEL_COLORS = ["#636efa", "#EF553B", "#00cc96", "#ab63fa", "#FFA15A",
                 "#19d3f3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"]
 
 
+GAP_FACTOR = 1.5    # a jump longer than 1.5 x the normal record interval is drawn as a gap
+
+
+def with_gaps(df: pd.DataFrame) -> pd.DataFrame:
+    """Insert an empty (NaN) row inside every time gap so Plotly breaks the line there instead
+    of drawing a straight line across missing records. The normal interval is the median spacing
+    (30 min for CSFlux, 10 s for raw TGAMon)."""
+    if df is None or len(df) < 3 or TIME_COL not in df:
+        return df
+    t = df[TIME_COL]
+    dt = t.diff()
+    step = dt.median()
+    if pd.isna(step) or step <= pd.Timedelta(0):
+        return df
+    gap = dt > step * GAP_FACTOR
+    if not gap.any():
+        return df
+    breaks = pd.DataFrame({TIME_COL: t[gap.shift(-1, fill_value=False)].values + step})
+    return pd.concat([df, breaks], ignore_index=True).sort_values(TIME_COL, kind="stable").reset_index(drop=True)
+
+
 def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go.Figure:
     """One time-series panel: a column name, or (title, [(col, label), ...]) for several lines."""
+    df = with_gaps(df)
     if isinstance(panel, str):
         title = format_title(panel, units_map)
         series = [(panel, panel, color, False)]
@@ -442,7 +549,14 @@ def panel_grid(df, vars_list, units_map, dtick, tickformat, title_text, start_id
 # =========================
 # App objects
 # =========================
-app = Dash(__name__, suppress_callback_exceptions=True)
+# Absolute path to the assets folder next to this file, so photos / setup.html / JS load
+# no matter which folder the IDE (VS Code, Spyder, Jupyter) starts Python from.
+try:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:                       # interactive window / notebook: no __file__
+    APP_DIR = os.getcwd()
+ASSETS_DIR = os.path.join(APP_DIR, "assets")
+app = Dash(__name__, suppress_callback_exceptions=True, assets_folder=ASSETS_DIR)
 server = app.server          # Render / gunicorn entry point:  gunicorn app:server
 app.title = "TGA310 Cattle CH4 Emission Measurement"
 
@@ -511,12 +625,190 @@ SETUP_PAGE = "setup/setup.html"
 
 
 def setup_layout():
+    page_file = os.path.join(ASSETS_DIR, *SETUP_PAGE.split("/"))
+    if not os.path.isfile(page_file):
+        return html.Div(style={"textAlign": "center", "marginTop": "40px", "color": "#8a6508"}, children=[
+            html.H4("Site and Setup page not found"),
+            html.P(f"Expected: {page_file}"),
+            html.P("Put the 'assets' folder (with setup/setup.html and the photos) next to app.py."),
+        ])
     return html.Iframe(
         src=app.get_asset_url(SETUP_PAGE),
         style={"width": "100%", "height": "calc(100vh - 140px)", "minHeight": "600px",
                "border": "none"},
         title="Site setup",
     )
+
+
+# =========================
+# TGAMon data (TGA310 health table): local LoggerNet file, else GitHub
+# =========================
+_TGAMON = {"df": pd.DataFrame(), "units": {}, "sig": None, "loaded_at": 0.0, "error": "", "source": ""}
+_TGAMON_LOCK = threading.Lock()
+
+
+def _tgamon_parse_toa5(text: str):
+    units = read_units_map_from_toa5_text(text)
+    df = pd.read_csv(StringIO(text), skiprows=[0, 2, 3], header=0,
+                     na_values=["NAN", "NaN", "nan", ""], low_memory=False)
+    df.columns = [str(c).strip().lstrip("\ufeff") for c in df.columns]
+    if TIME_COL not in df.columns:
+        raise ValueError(f"'{TIME_COL}' not found in TGAMon file")
+    df[TIME_COL] = pd.to_datetime(df[TIME_COL], format="ISO8601", errors="coerce")
+    return df, units
+
+
+def _tgamon_parse_tob3(raw: bytes, data_offset: int = 5120, meta_words: int = 3,
+                       trailer_words: int = 1, nan_placeholder: float = 3.39999e38):
+    """TOB3 reader from the TGAMonitr dashboard (fixed 5120-byte header, 3 meta words + 1 trailer)."""
+    import csv
+    head = raw[:data_offset].decode("utf-8", errors="replace").splitlines()
+    rows = [next(csv.reader([ln])) for ln in head[:6]]
+    rec_bytes = int(rows[1][2])
+    labels = [x.strip() for x in rows[2]]
+    units = [x.strip() for x in rows[3]] if len(rows) > 3 else []
+    n_words = rec_bytes // 4
+    n_data = n_words - meta_words - trailer_words
+    labels = (labels + [f"var_{i + 1}" for i in range(len(labels), n_data)])[:n_data]
+    n_rec = (len(raw) - data_offset) // rec_bytes
+    body = raw[data_offset:data_offset + n_rec * rec_bytes]
+    u4 = np.frombuffer(body, dtype="<u4").reshape(n_rec, n_words)
+    f4 = np.frombuffer(body, dtype="<f4").reshape(n_rec, n_words)
+    secs = u4[:, 0].astype(np.int64)
+    data = f4[:, meta_words:n_words - trailer_words].astype(np.float64)
+    ok = (secs > 0) & (~np.all(data == 0, axis=1)) if data.size else secs > 0
+    secs, recnum, data = secs[ok], u4[ok, 2].astype(np.int64), data[ok]
+    data[(data >= nan_placeholder) | (data <= -nan_placeholder)] = np.nan
+    df = pd.DataFrame(data, columns=labels)
+    df.insert(0, TIME_COL, pd.Timestamp("1990-01-01") + pd.to_timedelta(secs, unit="s"))
+    df.insert(1, "RECORD", recnum)
+    return df, dict(zip(labels, units[:len(labels)])) if units else {}
+
+
+def _tgamon_parse(raw: bytes):
+    first = raw[:64].decode("ascii", errors="ignore").lstrip().strip('"').upper()
+    if first.startswith("TOB3"):
+        df, units = _tgamon_parse_tob3(raw)
+    else:
+        df, units = _tgamon_parse_toa5(raw.decode("utf-8", errors="ignore"))
+    df = df.dropna(subset=[TIME_COL])
+    for c in df.columns:
+        if c != TIME_COL:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.drop_duplicates(subset=[TIME_COL], keep="last").sort_values(TIME_COL).reset_index(drop=True)
+    return df, units
+
+
+def load_tgamon(force: bool = False):
+    """Return (df, units_map, source). Local file (TGAMON_LOCAL_FILE or the LoggerNet path) is
+    re-read when it changes; otherwise GitHub is tried every REFRESH_MINUTES. Never raises."""
+    local = os.environ.get("TGAMON_LOCAL_FILE", "").strip().strip('"') or LOCAL_TGAMON_FILE
+    with _TGAMON_LOCK:
+        try:
+            if os.path.isfile(local):
+                st = os.stat(local)
+                sig = (local, st.st_size, st.st_mtime_ns)
+                if force or sig != _TGAMON["sig"]:
+                    with open(local, "rb") as f:
+                        raw = f.read()
+                    _TGAMON["df"], _TGAMON["units"] = _tgamon_parse(raw)
+                    _TGAMON.update(sig=sig, source=local, error="", loaded_at=time.time())
+                    print(f"[TGAMON] Loaded {len(_TGAMON['df'])} records from {local}", flush=True)
+            elif force or time.time() - _TGAMON["loaded_at"] > REFRESH_MINUTES * 60:
+                _TGAMON["loaded_at"] = time.time()
+                r = requests.get(TGAMON_GITHUB_RAW_URL, params={"t": int(time.time() // 60)}, timeout=60)
+                if r.status_code == 200:
+                    _TGAMON["df"], _TGAMON["units"] = _tgamon_parse(r.content)
+                    _TGAMON.update(source="GitHub: " + TGAMON_FILENAME, error="")
+                else:
+                    _TGAMON["error"] = (f"{TGAMON_FILENAME} not found locally ({local}) "
+                                        f"or on GitHub (HTTP {r.status_code}).")
+        except Exception as e:
+            _TGAMON["error"] = f"Could not read TGAMon data: {e}"
+            print(f"[TGAMON] {_TGAMON['error']}", flush=True)
+        return _TGAMON["df"], _TGAMON["units"], _TGAMON["source"]
+
+
+def make_tgamon_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
+    """Time series for one TGAMon plot spec (single / secondary / triple y-axes)."""
+    df = with_gaps(df)
+    vars_ = [v for v in spec["vars"] if v in df.columns]
+    y2 = [v for v in spec.get("secondary_y", []) if v in vars_]
+    y3 = [v for v in spec.get("third_y", []) if v in vars_ and v not in y2]
+    axis_of = {v: "y3" if v in y3 else "y2" if v in y2 else "y" for v in vars_}
+    fig = go.Figure()
+    trace = go.Scattergl if len(df) > 5000 else go.Scatter     # WebGL only for long 10 s series
+    for i, v in enumerate(vars_):
+        fig.add_trace(trace(
+            x=df[TIME_COL], y=df[v], mode="lines", name=v, yaxis=axis_of[v],
+            line=dict(width=1.2, color=PANEL_COLORS[i % len(PANEL_COLORS)]),
+            hovertemplate="%{x|%y/%m/%d %H:%M:%S}<br>" + v + ": %{y}<extra></extra>"))
+    used = [a for a in ("y", "y2", "y3") if a in axis_of.values()]
+
+    def ttl(axis):
+        vs = [v for v in vars_ if axis_of[v] == axis]
+        return ", ".join(format_title(v, units_map) for v in vs) if len(vs) <= 2 else ""
+    lay = {"yaxis": dict(title=dict(text=ttl("y"), font=dict(size=10)), tickfont=dict(size=10))}
+    if "y2" in used:
+        lay["yaxis2"] = dict(title=dict(text=ttl("y2"), font=dict(size=10)), overlaying="y", side="right",
+                             showgrid=False, tickfont=dict(size=10))
+    if "y3" in used:
+        lay["yaxis3"] = dict(title=dict(text=ttl("y3"), font=dict(size=10)), overlaying="y", side="right",
+                             anchor="free", position=1.0, showgrid=False, tickfont=dict(size=9))
+    fig.update_layout(**lay)
+    tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
+    fig.update_xaxes(type="date", tickmode="linear", tick0=tick0, dtick=dtick, tickformat=tickformat,
+                     tickangle=30, tickfont=dict(size=10), domain=[0, 0.78 if "y3" in used else 1])
+    many = len(vars_) > 1
+    fig.update_layout(
+        title=dict(text=spec.get("title", vars_[0]), x=0.5, xanchor="center", font=dict(size=14, color="#333")),
+        height=PANEL_HEIGHT_PX + (40 if many else 0), showlegend=many,
+        margin=dict(l=45, r=45 if "y2" in used else 10, t=40, b=45),
+        legend=dict(orientation="h", x=0, y=-0.35, font=dict(size=9)))
+    return fig
+
+
+def tgamon_content(start_date, end_date, display, custom_specs):
+    df, units_map, source = load_tgamon()
+    if df.empty:
+        return html.Div(style={"textAlign": "center", "marginTop": "40px", "color": "#555"}, children=[
+            html.H4("No TGAMon data"),
+            html.P(_TGAMON["error"] or "The TGAMon file has not been loaded yet."),
+            html.P(f"Expected locally at {LOCAL_TGAMON_FILE} (or set TGAMON_LOCAL_FILE), "
+                   f"or pushed to GitHub as {TGAMON_FILENAME}.", style={"fontSize": "12px", "color": "#999"}),
+        ])
+    dff = filter_df_by_datepicker_range(df, start_date, end_date)
+    if dff.empty:
+        return html.Div("No TGAMon data for the selected date range.",
+                        style={"textAlign": "center", "marginTop": "30px"})
+    span_days = (dff[TIME_COL].max() - dff[TIME_COL].min()).total_seconds() / 86400
+    note_extra = ""
+    if display == "raw" and span_days > TGAMON_RAW_MAX_DAYS:
+        display = "30min"
+        note_extra = f" · range > {TGAMON_RAW_MAX_DAYS} days, switched to 30 min"
+    if display == "30min":
+        dff = dff.set_index(TIME_COL).resample("30min").mean(numeric_only=True).reset_index()
+    dtick, tickformat = choose_axis_settings(dff)
+    specs = []
+    covered = set()
+    for sp in TGAMON_PLOT_SPECS:
+        vs = [v for v in sp["vars"] if v in dff.columns]
+        if vs:
+            specs.append({**sp, "vars": vs}); covered.update(vs)
+    if len(specs) < 5:            # variable names differ from the list: show every variable
+        specs += [{"vars": [c], "title": c} for c in dff.columns
+                  if c not in covered and c not in (TIME_COL, "RECORD")
+                  and pd.api.types.is_numeric_dtype(dff[c]) and dff[c].notna().any()]
+    cards = [plot_card(make_tgamon_figure(dff, sp, units_map, dtick, tickformat), i)
+             for i, sp in enumerate(specs)]
+    note = (f"Source: {source} · {len(dff):,} rows ({'30 min means' if display == '30min' else 'original 10 s'})"
+            f" · last record {df[TIME_COL].max():%Y-%m-%d %H:%M:%S}{note_extra}")
+    return html.Div([
+        html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+        custom_section(dff, specs_for_tab(custom_specs, TGAMON_TAB), units_map, dtick, tickformat),
+        html.Div(cards, style={"display": "grid", "gap": "10px", "marginTop": "8px",
+                               "gridTemplateColumns": f"repeat({TGAMON_PLOTS_PER_ROW}, minmax(0, 1fr))"}),
+    ])
 
 
 # =========================
@@ -549,6 +841,7 @@ QC_OPTIONS = [{"label": "None", "value": "all"}] + [
     {"label": f"< {g + 1}", "value": g} for g in range(1, 9)]
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "6px", "flexWrap": "wrap"}
+TGAMON_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px", "marginLeft": "6px"}
 WD_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                      "marginLeft": "6px"}
 WD_SUMMARY_STYLE = {"cursor": "pointer", "listStyle": "none", "border": "1px solid #ccc",
@@ -843,22 +1136,327 @@ def custom_var_options(df: pd.DataFrame):
     return [{"label": c, "value": c} for c in cols]
 
 
-def build_custom_spec(selected, y2, y3, y4):
-    """Same logic as the TGA monitor: axis variables are added to the plot if not already chosen."""
-    vars_ = list(selected or [])
-    for axis in (y2 or [], y3 or [], y4 or []):
+# ---- Add Plot: plot types and what each of the 4 dropdowns means for that type ----
+CUSTOM_DD_IDS = ["all-variables-dropdown", "secondary-y-dropdown", "third-y-dropdown", "fourth-y-dropdown"]
+DD_LABEL_STYLE = {"fontSize": "12px", "fontWeight": "bold", "color": "#1b4d3e", "marginBottom": "2px"}
+PLOT_TYPE_OPTIONS = [
+    {"label": "Time series (up to 4 y-axes)", "value": "ts"},
+    {"label": "Scatter / comparison (X vs Y)", "value": "scatter"},
+    {"label": "Linear regression", "value": "reg"},
+    {"label": "Box plot (by group)", "value": "box"},
+    {"label": "Fingerprint (day \u00d7 hour)", "value": "fp"},
+    {"label": "Diurnal median + IQR (up to 4 y-axes)", "value": "diurnal"},
+]
+BOX_GROUP_OPTIONS = [
+    {"label": "Hour of day", "value": "hour"},
+    {"label": "Day / night", "value": "daynight"},
+    {"label": "Wind direction (8 sectors)", "value": "wd8"},
+    {"label": "u* class", "value": "ustar"},
+    {"label": "Date", "value": "day"},
+]
+# per plot type: (label, multi, placeholder, options kind) for dropdowns 1-4 (None = hidden)
+PLOT_TYPE_FIELDS = {
+    "ts": [("Y variable(s)", True, "Choose one or more variables", "var"),
+           ("Secondary Y-axis", True, "Variable for secondary Y-axis", "var"),
+           ("Third Y-axis", True, "Variable for third Y-axis", "var"),
+           ("Fourth Y-axis", True, "Variable for 4th axis", "var")],
+    "scatter": [("X variable", False, "e.g. USTAR", "var"),
+                ("Y variable(s)", True, "e.g. FCH4_mass", "var"),
+                ("Colour points by (optional)", False, "e.g. TA_1_1_1", "var"),
+                None],
+    "reg": [("X variable (independent)", False, "e.g. FC_mass", "var"),
+            ("Y variable (dependent)", False, "e.g. FCH4_mass", "var"),
+            None, None],
+    "box": [("Variable", False, "e.g. FCH4_mass", "var"),
+            ("Group by", False, "Choose grouping", "group"),
+            None, None],
+    "fp": [("Variable", False, "e.g. FCH4_mass", "var"), None, None, None],
+    "diurnal": [("Left axis", False, "e.g. CH4_mixratio", "var"),
+                ("Right axis (optional)", False, "e.g. FCH4_mass", "var"),
+                ("2nd right axis (optional)", False, "e.g. USTAR", "var"),
+                ("3rd right axis (optional)", False, "e.g. TA_1_1_1", "var")],
+}
+PLOT_TYPE_HINTS = {
+    "ts": "Variables against time; extra axes are colour-coded.",
+    "scatter": "Y against X, with binned medians (IQR bars), e.g. FCH4 vs u*.",
+    "reg": "Least-squares line with equation, R\u00b2, RMSE and n.",
+    "box": "Distribution of a variable per group (median, quartiles, outliers).",
+    "fp": "Heat map of a variable: date on x, time of day on y.",
+    "diurnal": "Hourly median with IQR shading; each variable on its own colour-coded axis.",
+}
+
+
+def _one(v):
+    """Dropdown value -> single column name (accepts list or string)."""
+    if isinstance(v, (list, tuple)):
+        return v[0] if v else None
+    return v or None
+
+
+def _many(v):
+    if v is None:
+        return []
+    return list(v) if isinstance(v, (list, tuple)) else [v]
+
+
+def build_custom_spec(selected, y2, y3, y4, ptype="ts"):
+    """Turn the 4 dropdown values into a plot spec for the chosen plot type (None = incomplete)."""
+    if ptype == "scatter":
+        x, ys = _one(selected), [v for v in _many(y2) if v != _one(selected)]
+        return {"type": "scatter", "x": x, "y": ys, "color": _one(y3)} if x and ys else None
+    if ptype == "reg":
+        x, y = _one(selected), _one(y2)
+        return {"type": "reg", "x": x, "y": y} if x and y and x != y else None
+    if ptype == "box":
+        y, g = _one(selected), _one(y2)
+        return {"type": "box", "y": y, "group": g} if y and g else None
+    if ptype == "fp":
+        v = _one(selected)
+        return {"type": "fp", "var": v} if v else None
+    if ptype == "diurnal":
+        vs = []
+        for v in (_one(selected), _one(y2), _one(y3), _one(y4)):
+            if v and v not in vs:
+                vs.append(v)
+        return {"type": "diurnal", "vars": vs} if vs else None
+    # time series: axis variables are added to the plot if not already chosen (TGA monitor logic)
+    vars_ = _many(selected)
+    for axis in (_many(y2), _many(y3), _many(y4)):
         for v in axis:
             if v not in vars_:
                 vars_.append(v)
     if not vars_:
         return None
-    y2 = [v for v in (y2 or []) if v in vars_]
-    y3 = [v for v in (y3 or []) if v in vars_ and v not in y2]
-    y4 = [v for v in (y4 or []) if v in vars_ and v not in y2 and v not in y3]
-    return {"vars": vars_, "y2": y2, "y3": y3, "y4": y4}
+    y2 = [v for v in _many(y2) if v in vars_]
+    y3 = [v for v in _many(y3) if v in vars_ and v not in y2]
+    y4 = [v for v in _many(y4) if v in vars_ and v not in y2 and v not in y3]
+    return {"type": "ts", "vars": vars_, "y2": y2, "y3": y3, "y4": y4}
+
+
+def spec_columns(spec) -> list:
+    t = spec.get("type", "ts")
+    if t == "scatter":
+        return [spec["x"], *spec["y"]] + ([spec["color"]] if spec.get("color") else [])
+    if t == "reg":
+        return [spec["x"], spec["y"]]
+    if t == "box":
+        return [spec["y"]]
+    if t == "fp":
+        return [spec["var"]]
+    return list(spec.get("vars", []))          # "ts" and "diurnal"
+
+
+def _binned_median(x: pd.Series, y: pd.Series, nbins: int = 10):
+    """Median and IQR of y in equal-count bins of x (bins with < 3 points dropped)."""
+    ok = x.notna() & y.notna()
+    if ok.sum() < 10:
+        return None
+    q = pd.qcut(x[ok], q=min(nbins, int(ok.sum() // 5)), duplicates="drop")
+    g = y[ok].groupby(q, observed=True)
+    xm = x[ok].groupby(q, observed=True).median()
+    res = pd.DataFrame({"x": xm, "med": g.median(), "q1": g.quantile(.25), "q3": g.quantile(.75),
+                        "n": g.count()})
+    return res[res["n"] >= 3]
+
+
+def make_scatter_figure(df, spec, units_map) -> go.Figure:
+    x = spec["x"]
+    ys = [v for v in spec["y"] if v in df.columns]
+    cvar = spec.get("color") if spec.get("color") in df.columns else None
+    fig = go.Figure()
+    for i, y in enumerate(ys):
+        col = PANEL_COLORS[i % len(PANEL_COLORS)]
+        marker = dict(size=6, color=col, opacity=0.55, line=dict(width=0.3, color="#333"))
+        if cvar and len(ys) == 1:
+            marker.update(color=df[cvar], colorscale="Viridis", opacity=0.8, showscale=True,
+                          colorbar=dict(title=format_title(cvar, units_map), thickness=12))
+        fig.add_trace(go.Scatter(
+            x=df[x], y=df[y], mode="markers", marker=marker, name=y,
+            customdata=df[TIME_COL].dt.strftime("%y/%m/%d %H:%M"),
+            hovertemplate="%{customdata}<br>" + x + ": %{x}<br>" + y + ": %{y}<extra></extra>"))
+        b = _binned_median(df[x], df[y])
+        if b is not None and len(b):
+            fig.add_trace(go.Scatter(
+                x=b["x"], y=b["med"], mode="lines+markers", name=f"{y} binned median",
+                line=dict(color="black" if len(ys) == 1 else col, width=2.5),
+                marker=dict(size=8, symbol="diamond"),
+                error_y=dict(type="data", symmetric=False, array=b["q3"] - b["med"],
+                             arrayminus=b["med"] - b["q1"], thickness=1.2, width=4),
+                customdata=b["n"], hovertemplate="median %{y:.3g}<br>n = %{customdata}<extra></extra>"))
+    n = int(df[[x, *ys]].dropna().shape[0]) if ys else 0
+    fig.update_layout(
+        title=dict(text=f"{', '.join(ys)} vs {x} \u00b7 n = {n}", x=0.5, font=dict(size=14)),
+        xaxis_title=format_title(x, units_map),
+        yaxis_title=format_title(ys[0], units_map) if len(ys) == 1 else "",
+        height=420, margin=dict(l=60, r=30, t=60, b=50),
+        legend=dict(orientation="h", x=0, y=1.0, yanchor="bottom", font=dict(size=11)))
+    return fig
+
+
+def make_regression_figure(df, spec, units_map) -> go.Figure:
+    x, y = spec["x"], spec["y"]
+    d = df[[TIME_COL, x, y]].dropna()
+    fig = go.Figure(go.Scatter(
+        x=d[x], y=d[y], mode="markers", name="half-hours",
+        marker=dict(size=6, color="#1f77b4", opacity=0.55, line=dict(width=0.3, color="#333")),
+        customdata=d[TIME_COL].dt.strftime("%y/%m/%d %H:%M"),
+        hovertemplate="%{customdata}<br>" + x + ": %{x}<br>" + y + ": %{y}<extra></extra>"))
+    title = f"{y} vs {x}"
+    if len(d) >= 3 and d[x].nunique() > 1:
+        slope, icpt = np.polyfit(d[x], d[y], 1)
+        pred = slope * d[x] + icpt
+        ss_res = float(((d[y] - pred) ** 2).sum()); ss_tot = float(((d[y] - d[y].mean()) ** 2).sum())
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+        rmse = math.sqrt(ss_res / len(d))
+        xl = np.array([d[x].min(), d[x].max()])
+        sign = "+" if icpt >= 0 else "\u2212"
+        fig.add_trace(go.Scatter(x=xl, y=slope * xl + icpt, mode="lines", name="least-squares fit",
+                                 line=dict(color="#d62728", width=2.5)))
+        fig.add_annotation(xref="paper", yref="paper", x=0.02, y=0.98, xanchor="left", yanchor="top",
+                           showarrow=False, align="left", bgcolor="rgba(255,255,255,0.8)",
+                           text=(f"y = {slope:.4g} x {sign} {abs(icpt):.4g}<br>"
+                                 f"R\u00b2 = {r2:.3f} \u00b7 RMSE = {rmse:.3g} \u00b7 n = {len(d)}"))
+    else:
+        title += " (not enough data)"
+    fig.update_layout(title=dict(text=title, x=0.5, font=dict(size=14)),
+                      xaxis_title=format_title(x, units_map), yaxis_title=format_title(y, units_map),
+                      height=420, margin=dict(l=60, r=30, t=60, b=50), showlegend=False)
+    return fig
+
+
+def _box_groups(df, how):
+    """(group labels per row, ordered category list, axis title)."""
+    t = df[TIME_COL]
+    if how == "hour":
+        return t.dt.hour, list(range(24)), "Hour of day"
+    if how == "day":
+        g = t.dt.strftime("%m-%d")
+        return g, sorted(g.dropna().unique()), "Date"
+    if how == "daynight":
+        if "daytime" in df:
+            day = df["daytime"] >= 0.5
+        elif "sun_elevation" in df:
+            day = df["sun_elevation"] > 0
+        else:
+            day = t.dt.hour.between(7, 18)
+        return day.map({True: "Day", False: "Night"}), ["Day", "Night"], ""
+    if how == "wd8" and WD_COL in df:
+        names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        idx = ((df[WD_COL] + 22.5) % 360 // 45)
+        return idx.map(lambda k: names[int(k)] if pd.notna(k) else None), names, "Wind direction"
+    if how == "ustar" and USTAR_COL in df:
+        bins, labs = [-np.inf, 0.1, 0.2, 0.3, np.inf], ["< 0.1", "0.1\u20130.2", "0.2\u20130.3", "\u2265 0.3"]
+        return pd.cut(df[USTAR_COL], bins, labels=labs, right=False).astype(object), labs, "u* (m s-1)"
+    return pd.Series("all", index=df.index), ["all"], ""
+
+
+def make_box_figure(df, spec, units_map) -> go.Figure:
+    y, how = spec["y"], spec["group"]
+    g, order, gtitle = _box_groups(df, how)
+    fig = go.Figure()
+    for k in order:
+        vals = df.loc[g == k, y].dropna()
+        if len(vals):
+            fig.add_trace(go.Box(y=vals, name=f"{k}", boxpoints="outliers", marker=dict(size=3),
+                                 line=dict(width=1.2), fillcolor="rgba(168,119,10,0.25)",
+                                 marker_color="#a8770a", hovertemplate=f"{k}: " + "%{y}<extra></extra>"))
+    # n per group above each box (only when there are few groups, to avoid clutter)
+    if len(fig.data) <= 12:
+        for tr in fig.data:
+            fig.add_annotation(x=tr.name, y=1.0, yref="paper", text=f"n={len(tr.y)}",
+                               showarrow=False, font=dict(size=9, color="#666"), yanchor="bottom")
+    glabel = next((o["label"] for o in BOX_GROUP_OPTIONS if o["value"] == how), how)
+    fig.update_layout(title=dict(text=f"{y} by {glabel.lower()}", x=0.5, font=dict(size=14)),
+                      yaxis_title=format_title(y, units_map), xaxis_title=gtitle,
+                      xaxis=dict(type="category"), showlegend=False,
+                      height=420, margin=dict(l=60, r=30, t=60, b=70))
+    return fig
+
+
+DIURNAL_AXIS_COLORS = ["#8c510a", "#1f77b4", "#2ca02c", "#9467bd"]
+
+
+def make_diurnal_multi_figure(df, spec, units_map) -> go.Figure:
+    """Hourly median (line) and interquartile range (shaded) for up to 4 variables,
+    each on its own colour-coded y-axis (left, right, and two extra right axes)."""
+    vars_ = [v for v in spec["vars"] if v in df.columns][:4]
+    hour = df[TIME_COL].dt.hour
+    x = np.arange(24) + 0.5                                  # centre of each hour
+    axes = ["y", "y2", "y3", "y4"][:len(vars_)]
+    n_right = len(vars_) - 1
+    x_end = {0: 1.0, 1: 1.0, 2: 0.86, 3: 0.74}[max(n_right, 0)]
+    free_pos = {2: {"y3": 0.95}, 3: {"y3": 0.86, "y4": 0.98}}.get(n_right, {})
+    fig = go.Figure()
+    for i, (v, ax) in enumerate(zip(vars_, axes)):
+        col = DIURNAL_AXIS_COLORS[i]
+        g = df[v].groupby(hour)
+        med = g.median().reindex(range(24)).values
+        q1 = g.quantile(.25).reindex(range(24)).values
+        q3 = g.quantile(.75).reindex(range(24)).values
+        n = g.count().reindex(range(24)).fillna(0).astype(int).values
+        fig.add_trace(go.Scatter(x=x, y=q3, yaxis=ax, mode="lines", line=dict(width=0),
+                                 showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=x, y=q1, yaxis=ax, mode="lines", line=dict(width=0),
+                                 fill="tonexty", fillcolor=_rgba(col, 0.15),
+                                 showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=x, y=med, yaxis=ax, name=v, mode="lines+markers",
+            line=dict(color=col, width=2.2, dash="dash" if i == 2 else "solid"),
+            marker=dict(size=5, symbol=["circle", "square", "diamond", "triangle-up"][i]),
+            customdata=np.c_[q1, q3, n],
+            hovertemplate=(f"{v}<br>hour %{{x:.1f}}<br>median %{{y:.3g}}<br>"
+                           "IQR %{customdata[0]:.3g} to %{customdata[1]:.3g}<br>n = %{customdata[2]}<extra></extra>")))
+    lay = {}
+    for i, (v, ax) in enumerate(zip(vars_, axes)):
+        col = DIURNAL_AXIS_COLORS[i]
+        cfg = dict(title=dict(text=format_title(v, units_map), font=dict(size=11, color=col)),
+                   tickfont=dict(size=10, color=col), tickmode="auto", nticks=6)
+        if ax != "y":
+            cfg.update(overlaying="y", side="right", showgrid=False)
+            if ax in free_pos:
+                cfg.update(anchor="free", position=free_pos[ax])
+        lay["yaxis" if ax == "y" else "yaxis" + ax[1:]] = cfg
+    fig.update_layout(**lay)
+    if vars_ and df[vars_[0]].min() < 0 < df[vars_[0]].max():
+        fig.add_hline(y=0, line=dict(color="#666", width=0.8, dash="dot"))
+    fig.update_xaxes(range=[0, 24], dtick=3, title_text="Hour of day", domain=[0, x_end])
+    fig.update_layout(
+        title=dict(text="Diurnal median (IQR shaded): " + ", ".join(vars_), x=0.5, font=dict(size=14)),
+        height=420, margin=dict(l=60, r=40, t=70, b=50),
+        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom", font=dict(size=11),
+                    traceorder="normal"))
+    return fig
+
+
+def make_fingerprint_figure(df, spec, units_map) -> go.Figure:
+    v = spec["var"]
+    d = df[[TIME_COL, v]].dropna()
+    fig = go.Figure()
+    if d.empty:
+        return _empty_fig(f"{v} fingerprint")
+    day = d[TIME_COL].dt.normalize()
+    hh = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
+    Z = d.assign(day=day, hh=hh).pivot_table(index="hh", columns="day", values=v, aggfunc="mean")
+    Z = Z.reindex(index=np.arange(0, 24, 0.5),
+                  columns=pd.date_range(day.min(), day.max(), freq="D"))
+    lo, hi = np.nanpercentile(d[v], [2, 98])
+    diverging = lo < 0 < hi and abs(lo) > 0.2 * abs(hi)   # both signs matter (e.g. fluxes)
+    lim = max(abs(lo), abs(hi))
+    fig.add_trace(go.Heatmap(
+        x=Z.columns, y=Z.index, z=Z.values, hoverongaps=False,
+        colorscale="RdBu_r" if diverging else "Viridis",
+        zmin=-lim if diverging else lo, zmax=lim if diverging else hi, zmid=0 if diverging else None,
+        colorbar=dict(title=format_title(v, units_map), thickness=12),
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} h<br>" + v + ": %{z:.3g}<extra></extra>"))
+    fig.update_layout(title=dict(text=f"{v} fingerprint (date \u00d7 time of day)", x=0.5, font=dict(size=14)),
+                      xaxis=dict(title="Date", tickformat="%m-%d"),
+                      yaxis=dict(title="Time of day (h)", range=[0, 24], dtick=3),
+                      height=420, margin=dict(l=60, r=30, t=60, b=50))
+    return fig
 
 
 def make_custom_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
+    df = with_gaps(df)
     vars_ = [v for v in spec["vars"] if v in df.columns]
     y2, y3, y4 = set(spec["y2"]), set(spec["y3"]), set(spec["y4"])
     axis_of = {v: ("y4" if v in y4 else "y3" if v in y3 else "y2" if v in y2 else "y") for v in vars_}
@@ -903,12 +1501,30 @@ def make_custom_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
     return fig
 
 
+def spec_home(sp) -> str:
+    """Tab an added plot is shown on (no tab = flux tab; the old Meteorology tab is now the flux tab)."""
+    t = sp.get("tab", FLUX_TAB)
+    return FLUX_TAB if t == MET_TAB else t
+
+
+def specs_for_tab(specs, tab):
+    """Added-plot specs that belong to a tab."""
+    return [sp for sp in (specs or []) if spec_home(sp) == tab]
+
+
 def custom_section(df, specs, units_map, dtick, tickformat):
-    specs = [sp for sp in (specs or []) if any(v in df.columns for v in sp.get("vars", []))]
+    specs = [sp for sp in (specs or []) if all(c in df.columns for c in spec_columns(sp) if c)]
     if not specs:
         return None
-    cards = [plot_card(make_custom_figure(df, sp, units_map, dtick, tickformat), 1000 + i)
-             for i, sp in enumerate(specs)]
+    makers = {"scatter": make_scatter_figure, "reg": make_regression_figure,
+              "box": make_box_figure, "fp": make_fingerprint_figure,
+              "diurnal": make_diurnal_multi_figure}
+    cards = []
+    for i, sp in enumerate(specs):
+        t = sp.get("type", "ts")
+        fig = (makers[t](df, sp, units_map) if t in makers
+               else make_custom_figure(df, sp, units_map, dtick, tickformat))
+        cards.append(plot_card(fig, 1000 + i))
     return html.Div(style={"marginBottom": "12px"}, children=[
         html.Div("Added plots", style={"fontWeight": "bold", "color": "#1b4d3e", "margin": "6px 0"}),
         html.Div(cards, style={"display": "grid", "gap": "10px",
@@ -1003,6 +1619,12 @@ def serve_layout():
                                     ]),
                                 ]),
                             ]),
+                            html.Div(id="tgamon-controls", style={**TGAMON_CONTROLS_STYLE, "display": "none"},
+                                     children=[
+                                html.Span("Display:", style={"fontSize": "14px"}),
+                                dcc.Dropdown(id="tgamon-display", options=TGAMON_DISPLAY_OPTIONS, value="30min",
+                                             clearable=False, style={"width": "140px"}),
+                            ]),
                             # Buttons sit on the same row as Range / QC / u* / Wind direction
                             html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
                                         style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
@@ -1016,23 +1638,27 @@ def serve_layout():
                 ],
             ),
             html.Div(id="variable-panel", style={"display": "none"}, children=[
-                html.Div(style={"display": "grid", "gap": "10px", "alignItems": "center", "marginBottom": "10px",
-                                "gridTemplateColumns": "170px minmax(260px, 1.4fr) repeat(3, minmax(200px, 1fr))"},
+                html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center",
+                                "flexWrap": "wrap", "marginBottom": "8px"}, children=[
+                    html.Div("Create additional plot:", style={"fontWeight": "bold"}),
+                    html.Span("Plot type", style={"fontSize": "13px"}),
+                    dcc.Dropdown(id="plot-type", options=PLOT_TYPE_OPTIONS, value="ts", clearable=False,
+                                 style={"width": "260px"}),
+                    html.Span(id="plot-type-hint", style={"fontSize": "12px", "color": "#666"}),
+                ]),
+                html.Div(style={"display": "grid", "gap": "10px", "alignItems": "end", "marginBottom": "10px",
+                                "gridTemplateColumns": "repeat(4, minmax(200px, 1fr))"},
                          children=[
-                             html.Div("Create additional plot:", style={"fontWeight": "bold"}),
-                             dcc.Dropdown(id="all-variables-dropdown", options=var_opts, value=[], multi=True,
-                                          placeholder="Choose one or more variables"),
-                             dcc.Dropdown(id="secondary-y-dropdown", options=var_opts, value=[], multi=True,
-                                          placeholder="Variable for secondary Y-axis"),
-                             dcc.Dropdown(id="third-y-dropdown", options=var_opts, value=[], multi=True,
-                                          placeholder="Variable for third Y-axis"),
-                             dcc.Dropdown(id="fourth-y-dropdown", options=var_opts, value=[], multi=True,
-                                          placeholder="Variable for 4th axis"),
+                             html.Div(id=f"dd-wrap-{i}", children=[
+                                 html.Div(id=f"dd-label-{i}", style=DD_LABEL_STYLE),
+                                 dcc.Dropdown(id=dd_id, options=var_opts, value=[], multi=True),
+                             ])
+                             for i, dd_id in enumerate(CUSTOM_DD_IDS, start=1)
                          ]),
                 html.Div(style={"display": "flex", "gap": "10px", "flexWrap": "wrap"}, children=[
                     html.Button("Add Plot", id="add-plot-btn", n_clicks=0,
                                 style={**BTN, "border": "1px solid #2e8b57", "color": "#2e8b57"}),
-                    html.Button("Clear Added Plots", id="clear-selected-vars-btn", n_clicks=0,
+                    html.Button("Clear Added Plots (this tab)", id="clear-selected-vars-btn", n_clicks=0,
                                 style={**BTN, "border": "1px solid #888"}),
                 ]),
             ]),
@@ -1040,7 +1666,7 @@ def serve_layout():
             dcc.Tabs(id="tabs", value=SETUP_TAB,
                      style={"borderBottom": "3px solid #a8770a", "marginTop": "6px"}, children=[
                 dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
-                for n in [SETUP_TAB] + tab_names
+                for n in [SETUP_TAB] + tab_names + [TGAMON_TAB]
             ]),
             html.Div(id="tab-content", style={"marginTop": "8px"}),
             # Pop-up for a maximized plot
@@ -1092,6 +1718,7 @@ RANGE_ROW_STYLE = {
     Output("flux-controls", "style"),
     Output("wd-controls", "style"),
     Output("save-pdf-btn", "style"),
+    Output("tgamon-controls", "style"),
     Input("tabs", "value"),
 )
 def toggle_range(tab_value):
@@ -1099,10 +1726,11 @@ def toggle_range(tab_value):
     lu = {"fontSize": "12px", "color": "#666"}
     hide = {"display": "none"}
     fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, **hide}
-    wd = WD_CONTROLS_STYLE if tab_value in (FLUX_TAB, MET_TAB) else {**WD_CONTROLS_STYLE, **hide}
+    wd = WD_CONTROLS_STYLE if tab_value == FLUX_TAB else {**WD_CONTROLS_STYLE, **hide}
+    tg = TGAMON_CONTROLS_STYLE if tab_value == TGAMON_TAB else {**TGAMON_CONTROLS_STYLE, **hide}
     if tab_value == SETUP_TAB:
-        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd, {**SAVE_BTN_STYLE, **hide}
-    return RANGE_ROW_STYLE, lu, fc, wd, SAVE_BTN_STYLE
+        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd, {**SAVE_BTN_STYLE, **hide}, tg
+    return RANGE_ROW_STYLE, lu, fc, wd, SAVE_BTN_STYLE, tg
 
 
 @app.callback(
@@ -1142,6 +1770,10 @@ def refresh_dates(_n, start_date, end_date, old_max):
 
     new_min = df[TIME_COL].min().date()
     new_max = df[TIME_COL].max().date()
+    tg = load_tgamon()[0]                      # let the picker reach TGAMon-only days too
+    if not tg.empty:
+        new_min = min(new_min, tg[TIME_COL].min().date())
+        new_max = max(new_max, tg[TIME_COL].max().date())
     last_rec = df[TIME_COL].max().strftime("%Y-%m-%d %H:%M")
 
     if start_date is None:                       # data just arrived
@@ -1164,9 +1796,9 @@ PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "bo
     Input("tabs", "value"),
 )
 def toggle_variable_panel(n, tab_value):
-    """Add Plot panel: opened/closed by the button; only on the Fluxes and Turbulence tab."""
+    """Add Plot panel: opened/closed by the button; on the Fluxes and Turbulence and TGAMon tabs."""
     btn = {**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a", "fontWeight": "bold"}
-    if tab_value != FLUX_TAB:                      # Add Plot only on the Fluxes and Turbulence tab
+    if tab_value not in (FLUX_TAB, TGAMON_TAB):    # Add Plot on the flux and TGAMon tabs
         return {"display": "none"}, {**btn, "display": "none"}
     return (PANEL_STYLE if (n or 0) % 2 == 1 else {"display": "none"}), btn
 
@@ -1184,16 +1816,53 @@ def toggle_variable_panel(n, tab_value):
     State("third-y-dropdown", "value"),
     State("fourth-y-dropdown", "value"),
     State("custom-specs", "data"),
+    State("plot-type", "value"),
+    State("tabs", "value"),
     prevent_initial_call=True,
 )
-def update_custom_specs(_add, _clear, sel, y2, y3, y4, specs):
+def update_custom_specs(_add, _clear, sel, y2, y3, y4, specs, ptype, tab_value):
+    """Added plots are kept per tab: each spec remembers the tab it was created on."""
     from dash import ctx, no_update
-    if ctx.triggered_id == "clear-selected-vars-btn":
-        return [], [], [], [], []
-    spec = build_custom_spec(sel, y2, y3, y4)
+    if ctx.triggered_id == "clear-selected-vars-btn":           # clear only this tab's plots
+        keep = [sp for sp in (specs or []) if spec_home(sp) != tab_value]
+        return keep, no_update, no_update, no_update, no_update
+    spec = build_custom_spec(sel, y2, y3, y4, ptype or "ts")
     if spec is None:
         return no_update, no_update, no_update, no_update, no_update
-    return (specs or []) + [spec], [], [], [], []
+    spec["tab"] = tab_value
+    empty = [[] if f and f[1] else None for f in PLOT_TYPE_FIELDS.get(ptype or "ts")]
+    return (specs or []) + [spec], *[e if e is not None else None for e in empty]
+
+
+@app.callback(
+    *[Output(f"dd-wrap-{i}", "style") for i in range(1, 5)],
+    *[Output(f"dd-label-{i}", "children") for i in range(1, 5)],
+    *[Output(dd, "multi") for dd in CUSTOM_DD_IDS],
+    *[Output(dd, "placeholder") for dd in CUSTOM_DD_IDS],
+    *[Output(dd, "options") for dd in CUSTOM_DD_IDS],
+    *[Output(dd, "value", allow_duplicate=True) for dd in CUSTOM_DD_IDS],
+    Output("plot-type-hint", "children"),
+    Input("plot-type", "value"),
+    Input("tabs", "value"),
+    prevent_initial_call="initial_duplicate",
+)
+def configure_plot_type(ptype, tab_value=None):
+    """Relabel / show / hide the 4 variable dropdowns to match the selected plot type;
+    variables come from the TGAMon file on the TGAMon tab, else from CSFlux."""
+    fields = PLOT_TYPE_FIELDS.get(ptype or "ts", PLOT_TYPE_FIELDS["ts"])
+    df = load_tgamon()[0] if tab_value == TGAMON_TAB else load_data()[0]
+    var_opts = custom_var_options(df) if not df.empty else []
+    styles, labels, multis, holders, opts, vals = [], [], [], [], [], []
+    for f in fields:
+        if f is None:
+            styles.append({"display": "none"}); labels.append(""); multis.append(True)
+            holders.append(""); opts.append(var_opts); vals.append([])
+        else:
+            lab, multi, ph, kind = f
+            styles.append({"display": "block"}); labels.append(lab); multis.append(multi)
+            holders.append(ph); opts.append(BOX_GROUP_OPTIONS if kind == "group" else var_opts)
+            vals.append([] if multi else None)
+    return (*styles, *labels, *multis, *holders, *opts, *vals, PLOT_TYPE_HINTS.get(ptype, ""))
 
 
 @app.callback(
@@ -1206,15 +1875,19 @@ def update_custom_specs(_add, _clear, sel, y2, y3, y4, specs):
     Input("wd-sector", "value"),
     Input("ustar-filter", "value"),
     Input("custom-specs", "data"),
+    Input("tgamon-display", "value"),
 )
 def render_tab(tab_value, start_date, end_date, _n, *args):
     nq = len(QC_FILTERS)
     custom_specs = args[nq + 2] if len(args) > nq + 2 else []
+    tgamon_display = args[nq + 3] if len(args) > nq + 3 else "30min"
     qc_limits = list(args[:nq])
     sector = args[nq] if len(args) > nq else None
     ustar = args[nq + 1] if len(args) > nq + 1 else "none"
     if tab_value == SETUP_TAB:
         return setup_layout()
+    if tab_value == TGAMON_TAB:
+        return tgamon_content(start_date, end_date, tgamon_display, custom_specs)
 
     df, units_map = load_data()
     if df.empty:
@@ -1233,17 +1906,6 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     s_txt = "" if start_date is None else str(start_date)
     e_txt = "" if end_date is None else str(end_date)
     title_range = f"{s_txt} → {e_txt}".strip(" →")
-
-    if tab_value == MET_TAB:
-        dfm = filter_wd(dff, sector)
-        note = f"Wind direction: {sectors_label(sector)} · {n_records(dfm)} of {len(dff)} records"
-        if n_records(dfm) == 0:
-            return html.Div("No data for the selected wind directions. (" + note + ")",
-                            style={"textAlign": "center", "marginTop": "30px"})
-        return html.Div([
-            html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-            panel_grid(dfm, vars_list, units_map, dtick, tickformat, title_range),
-        ])
 
     if tab_value != FLUX_TAB:
         return panel_grid(dff, vars_list, units_map, dtick, tickformat, title_range)
@@ -1266,7 +1928,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
     analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
         html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-        custom_section(dfq, custom_specs, units_map, dtick, tickformat),
+        custom_section(dfq, specs_for_tab(custom_specs, FLUX_TAB), units_map, dtick, tickformat),
         panel_grid(dfq, vars_list, units_map, dtick, tickformat, title_range),
         html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "marginTop": "14px"},
                  children=[
@@ -1327,6 +1989,9 @@ app.clientside_callback(
 # =========================
 # Local run (Render uses gunicorn instead)
 # =========================
+# VS Code: open this folder, run  pip install -r requirements.txt , then press F5 / "Run Python File".
+# Optional: set CSFLUX_LOCAL_FILE=C:\Campbellsci\LoggerNet\Data\Cattle_Experiment_Eagle_TGA310_CSFlux.dat
+# to read the LoggerNet file directly instead of GitHub.
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8050"))
