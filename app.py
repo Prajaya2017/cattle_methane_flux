@@ -180,7 +180,9 @@ USTAR_COL = "USTAR"
 # u* filter: removes weak-turbulence half-hours (u* <= threshold)
 USTAR_OPTIONS = [{"label": "None", "value": "none"},
                  {"label": "\u2264 0.1", "value": 0.1},
-                 {"label": "\u2264 0.2", "value": 0.2}]
+                 {"label": "\u2264 0.15", "value": 0.15},
+                 {"label": "\u2264 0.2", "value": 0.2},
+                 {"label": "\u2264 0.25", "value": 0.25}]
 # Variables blanked by the u* filter (removed points are drawn in grey on their plots)
 USTAR_EXTRA_COLS = ["USTAR", "TKE", "CH4", "CO2", "H2O"]
 ET_COL = "ET"
@@ -515,6 +517,15 @@ def with_gaps(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, breaks], ignore_index=True).sort_values(TIME_COL, kind="stable").reset_index(drop=True)
 
 
+def _ustar_threshold(df) -> str:
+    """u* threshold used by the filter, formatted for labels ('' if unknown)."""
+    v = df.attrs.get("ustar")
+    if v is None and USTAR_THR_COL in df:
+        s = df[USTAR_THR_COL].dropna()
+        v = s.iloc[0] if not s.empty else None
+    return "" if v is None else f"{float(v):g}"
+
+
 def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go.Figure:
     """One time-series panel: a column name, or (title, [(col, label), ...]) for several lines."""
     df = with_gaps(df)
@@ -540,7 +551,7 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
             fig.add_trace(go.Scatter(
                 x=df[TIME_COL], y=df[rm], mode="markers",
                 marker=dict(size=4, color="rgba(150,150,150,0.8)", symbol="x"),
-                name=f"removed (u* \u2264 {df.attrs.get('ustar', '')})", showlegend=True,
+                name=f"removed (u* \u2264 {_ustar_threshold(df)} m/s)", showlegend=True,
                 hovertemplate="%{x|%y/%m/%d %H:%M}<br>removed: %{y}<extra></extra>",
             ))
     tick0 = aligned_tick0(df[TIME_COL].min(), dtick)
@@ -861,10 +872,11 @@ TAB_SELECTED_STYLE = {
 
 
 # SSITC flag filters (AmeriFlux: 0 = best, 1 = usable, 2 = bad); value = highest flag kept
+# "> 0" excludes flags 1 and 2 (keeps 0); "> 1" excludes flag 2 (keeps 0 and 1)
 QC_OPTIONS = [{"label": "None", "value": "all"},
-              {"label": "0", "value": 0},
-              {"label": "\u2264 1", "value": 1}]
-QC_NOTE = {o["value"]: o["label"] for o in QC_OPTIONS}
+              {"label": "> 0", "value": 0},
+              {"label": "> 1", "value": 1}]
+QC_NOTE = {o["value"]: o["label"] + " excluded" for o in QC_OPTIONS}
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "6px", "flexWrap": "wrap"}
 TGAMON_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px", "marginLeft": "6px"}
@@ -917,6 +929,7 @@ def sectors_label(sectors) -> str:
 
 
 RM_PREFIX = "_ustar_removed_"
+USTAR_THR_COL = "_ustar_threshold"   # carries the u* threshold to the plots (df.attrs is lost on concat)
 
 
 def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.DataFrame:
@@ -936,6 +949,7 @@ def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.Data
             d[RM_PREFIX + c] = d[c].where(low)
         d.loc[low | d[USTAR_COL].isna(), cols] = float("nan")
         d.attrs["ustar"] = float(ustar)
+        d[USTAR_THR_COL] = float(ustar)
     return filter_wd(d, sector)
 
 
@@ -1157,7 +1171,8 @@ BTN = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white",
 
 
 def custom_var_options(df: pd.DataFrame):
-    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and not c.upper().endswith(("_QC", "_SSITC_TEST"))
+    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and not c.startswith("_")
+            and not c.upper().endswith(("_QC", "_SSITC_TEST"))
             and pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any()]
     return [{"label": c, "value": c} for c in cols]
 
@@ -1172,6 +1187,7 @@ PLOT_TYPE_OPTIONS = [
     {"label": "Box plot (by group)", "value": "box"},
     {"label": "Fingerprint (day \u00d7 hour)", "value": "fp"},
     {"label": "Diurnal median + IQR (up to 4 y-axes)", "value": "diurnal"},
+    {"label": "Polar (variable vs wind direction)", "value": "polar"},
 ]
 BOX_GROUP_OPTIONS = [
     {"label": "Hour of day", "value": "hour"},
@@ -1201,6 +1217,10 @@ PLOT_TYPE_FIELDS = {
                 ("Right axis (optional)", False, "e.g. FCH4", "var"),
                 ("2nd right axis (optional)", False, "e.g. USTAR", "var"),
                 ("3rd right axis (optional)", False, "e.g. TA_1_1_1", "var")],
+    "polar": [("Radial variable", False, "e.g. FCH4", "var"),
+              ("Angle (direction) variable", False, "Default: WD", "var"),
+              ("Colour points by (optional)", False, "e.g. USTAR", "var"),
+              None],
 }
 PLOT_TYPE_HINTS = {
     "ts": "Variables against time; extra axes are colour-coded.",
@@ -1209,6 +1229,7 @@ PLOT_TYPE_HINTS = {
     "box": "Distribution of a variable per group (median, quartiles, outliers).",
     "fp": "Heat map of a variable: date on x, time of day on y.",
     "diurnal": "Hourly median with IQR shading; each variable on its own colour-coded axis.",
+    "polar": "Variable against wind direction on a polar plot (half-hours + 16-sector mean).",
 }
 
 
@@ -1239,6 +1260,9 @@ def build_custom_spec(selected, y2, y3, y4, ptype="ts"):
     if ptype == "fp":
         v = _one(selected)
         return {"type": "fp", "var": v} if v else None
+    if ptype == "polar":
+        r, th = _one(selected), _one(y2) or WD_COL
+        return {"type": "polar", "r": r, "theta": th, "color": _one(y3)} if r and r != th else None
     if ptype == "diurnal":
         vs = []
         for v in (_one(selected), _one(y2), _one(y3), _one(y4)):
@@ -1269,6 +1293,8 @@ def spec_columns(spec) -> list:
         return [spec["y"]]
     if t == "fp":
         return [spec["var"]]
+    if t == "polar":
+        return [spec["r"], spec["theta"]] + ([spec["color"]] if spec.get("color") else [])
     return list(spec.get("vars", []))          # "ts" and "diurnal"
 
 
@@ -1481,6 +1507,52 @@ def make_fingerprint_figure(df, spec, units_map) -> go.Figure:
     return fig
 
 
+def make_polar_figure(df, spec, units_map) -> go.Figure:
+    """Radial variable vs a direction variable (deg, compass: 0 = N, clockwise).
+    Dots = half-hours (optionally coloured by a 3rd variable); red line = 16-sector mean."""
+    r, th, c = spec["r"], spec.get("theta") or WD_COL, spec.get("color")
+    title = f"{r} vs {th}"
+    cols = [th, r] + ([c] if c and c not in (r, th) else [])
+    d = df[cols].dropna(subset=[th, r])
+    if d.empty:
+        return _empty_fig(title)
+    theta = d[th] % 360
+    fig = go.Figure()
+    mk = dict(size=5, opacity=0.65, color="#1f77b4")
+    if c and c in d:
+        mk.update(color=d[c], colorscale="Viridis", showscale=True,
+                  colorbar=dict(title=format_title(c, units_map), thickness=12, x=1.08))
+    fig.add_trace(go.Scatterpolar(
+        r=d[r], theta=theta, mode="markers", marker=mk, name="30-min",
+        hovertemplate=f"{th} " + "%{theta:.0f}\u00b0<br>" + r + " %{r:.3g}<extra></extra>"))
+    # 16-sector mean (22.5 deg sectors centred on N, NNE, ...), closed loop
+    idx = _sector_index(theta, 16)
+    m = d[r].groupby(idx).mean().reindex(range(16))
+    n = d[r].groupby(idx).count().reindex(range(16)).fillna(0).astype(int)
+    if m.notna().any():
+        ang = np.arange(16) * 22.5
+        fig.add_trace(go.Scatterpolar(
+            r=np.append(m.values, m.values[0]), theta=np.append(ang, 360),
+            mode="lines+markers", name="Sector mean", line=dict(color="#d62728", width=2),
+            marker=dict(size=5), customdata=np.append(n.values, n.values[0]),
+            hovertemplate="%{theta:.1f}\u00b0<br>mean %{r:.3g}<br>n = %{customdata}<extra></extra>"))
+    lo, hi = float(d[r].min()), float(d[r].max())
+    pad = 0.05 * (hi - lo or 1)
+    fig.update_layout(
+        title=dict(text=f"{fmt_units(format_title(r, units_map))} vs {th} \u00b7 n = {len(d)}"
+                   + ("<br><sup>centre = minimum value (radial axis starts below 0)</sup>" if lo < 0 else ""),
+                   x=0.5, font=dict(size=14)),
+        height=460, margin=dict(l=60, r=80, t=80, b=50),
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.05, yanchor="top"),
+        polar=dict(angularaxis=dict(direction="clockwise", rotation=90, tickmode="array",
+                                    tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
+                                    ticktext=["N", "NE", "E", "SE", "S", "SW", "W", "NW"]),
+                   radialaxis=dict(range=[lo - pad, hi + pad], angle=45, nticks=5,
+                                   tickfont=dict(size=9))),
+    )
+    return fig
+
+
 def make_custom_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
     df = with_gaps(df)
     vars_ = [v for v in spec["vars"] if v in df.columns]
@@ -1544,7 +1616,7 @@ def custom_section(df, specs, units_map, dtick, tickformat):
         return None
     makers = {"scatter": make_scatter_figure, "reg": make_regression_figure,
               "box": make_box_figure, "fp": make_fingerprint_figure,
-              "diurnal": make_diurnal_multi_figure}
+              "diurnal": make_diurnal_multi_figure, "polar": make_polar_figure}
     cards = []
     for i, sp in enumerate(specs):
         t = sp.get("type", "ts")
@@ -1616,7 +1688,7 @@ def serve_layout():
                                 )],
                                 html.Span("u*:", style={"fontSize": "14px", "marginLeft": "6px"}),
                                 dcc.Dropdown(id="ustar-filter", options=USTAR_OPTIONS, value="none",
-                                             clearable=False, style={"width": "92px"}),
+                                             clearable=False, style={"width": "100px"}),
                             ]),
                             html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
                                 html.Span("Wind direction:", style={"fontSize": "14px"}),
