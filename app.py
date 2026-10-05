@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Dash app: CSFlux (TGA310 methane EC) dashboard.
+Dash app: AmeriFlux (TGA310 methane EC) dashboard.
 
-- Reads Cattle_Experiment_Eagle_TGA310_CSFlux.dat from GitHub (Prajaya2017/cattle_methane_flux, main)
+- Reads Cattle_Experiment_Eagle_TGA310_AmrFlux.dat (AmeriFlux-format table) from GitHub (Prajaya2017/cattle_methane_flux, main)
 - Plots ONLY main flux and meteorological variables
   (no QC flags, no SIGMA/statistics, no sample counts, no diagnostics)
 - Tabs "Site and Setup", "Flux and Meteorology" (fluxes, turbulence, mixing ratios and meteorology)
@@ -44,7 +44,7 @@ TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 GITHUB_REPO = "Prajaya2017/cattle_methane_flux"
 BRANCH = "main"
-FILENAME = "Cattle_Experiment_Eagle_TGA310_CSFlux.dat"
+FILENAME = "Cattle_Experiment_Eagle_TGA310_AmrFlux.dat"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILENAME}"
 # Direct file download: not subject to the GitHub API rate limit (60 requests/hour per IP)
 GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{FILENAME}"
@@ -52,7 +52,7 @@ GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{FIL
 # Local LoggerNet files: used automatically when they exist (e.g. running app.py in VS Code
 # on the LoggerNet PC). On Render these paths don't exist, so the GitHub copies are used.
 LOGGERNET_DATA_DIR = r"C:\Campbellsci\LoggerNet\Data"
-LOCAL_CSFLUX_FILE = os.path.join(LOGGERNET_DATA_DIR, FILENAME)
+LOCAL_FLUX_FILE = os.path.join(LOGGERNET_DATA_DIR, FILENAME)
 TGAMON_FILENAME = "Cattle_Experiment_Eagle_TGA310_TGAMonitor.dat"
 LOCAL_TGAMON_FILE = os.path.join(LOGGERNET_DATA_DIR, TGAMON_FILENAME)
 TGAMON_GITHUB_RAW_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{BRANCH}/{TGAMON_FILENAME}"
@@ -66,25 +66,25 @@ ROW_HEIGHT_PX = 230
 # Main variables only, grouped into tabs (edit to add/remove)
 TABS = {
     "Flux and Meteorology": [
-        "FCH4_mass",     # CH4 flux
-        "FC_mass",       # CO2 flux
+        "FCH4",          # CH4 flux (nmol m-2 s-1)
+        "FC",            # CO2 flux (umol m-2 s-1)
         "LE",            # latent heat flux
         "H",             # sensible heat flux
-        "ET",            # evapotranspiration
-        "FH2O",          # water vapour flux (calculated from LE)
+        "ET",            # evapotranspiration (calculated from FH2O)
+        "FH2O",          # water vapour flux
         "TAU",           # momentum flux
         "USTAR",         # friction velocity
-        "TKE",           # turbulent kinetic energy
-        "Bowen_ratio",
-        "CH4_mixratio",  # CH4 mixing ratio (TGA310)
-        "CO2_mixratio",  # CO2 dry mixing ratio (from IRGASON density, TA, PA)
-        "H2O_mixratio",  # H2O dry mixing ratio (from IRGASON density, TA, PA)
+        "TKE",           # turbulent kinetic energy (calculated from U/V/W_SIGMA)
+        "Bowen_ratio",   # H / LE (calculated)
+        "CH4",           # CH4 mole fraction (TGA310)
+        "CO2",           # CO2 mole fraction
+        "H2O",           # H2O mole fraction
         # --- meteorology (formerly its own tab) ---
         ("Air & soil temperature (deg C)",
          [("TA_1_1_1", "Air temp"), ("TS_1_1_1", "Soil temp")]),   # one plot, two lines
         "RH_1_1_1",      # relative humidity
-        "T_DP_1_1_1",    # dew point
-        "e_amb",         # vapor pressure
+        "T_DP_1_1_1",    # dew point (calculated from TA and RH)
+        "e_amb",         # vapor pressure (calculated from TA and RH)
         "VPD",           # vapor pressure deficit
         "PA",            # air pressure
         "WS",            # wind speed
@@ -169,10 +169,12 @@ TGAMON_PLOT_SPECS = [
     {"vars": ["RH_smp_cell_thp"], "title": "RH_smp_cell_thp", "axis_mode": "single"},
     {"vars": ["RH_vrtx_thp"], "title": "RH_vrtx_thp", "axis_mode": "single"},
 ]
-FCH4_COL, FCH4_QC_COL = "FCH4_mass", "FCH4_QC"     # ugCH4 m-2 s-1
-FC_COL, FC_QC_COL = "FC_mass", "FC_QC"             # mgCO2 m-2 s-1
-LE_COL, LE_QC_COL = "LE", "LE_QC"                   # W m-2
-H_COL, H_QC_COL = "H", "H_QC"                       # W m-2
+# AmeriFlux table: fluxes are already molar; QC = SSITC test flag (0 = best, 1 = ok, 2 = bad)
+FCH4_COL, FCH4_QC_COL = "FCH4", "FCH4_SSITC_TEST"  # nmolCH4 m-2 s-1
+FC_COL, FC_QC_COL = "FC", "FC_SSITC_TEST"          # umolCO2 m-2 s-1
+LE_COL, LE_QC_COL = "LE", "LE_SSITC_TEST"           # W m-2
+H_COL, H_QC_COL = "H", "H_SSITC_TEST"               # W m-2
+FH2O_QC_COL = "FH2O_SSITC_TEST"
 
 USTAR_COL = "USTAR"
 # u* filter: removes weak-turbulence half-hours (u* <= threshold)
@@ -180,10 +182,9 @@ USTAR_OPTIONS = [{"label": "None", "value": "none"},
                  {"label": "\u2264 0.1", "value": 0.1},
                  {"label": "\u2264 0.2", "value": 0.2}]
 # Variables blanked by the u* filter (removed points are drawn in grey on their plots)
-USTAR_EXTRA_COLS = ["USTAR", "TKE", "CH4_mixratio", "CO2_mixratio", "H2O_mixratio"]
+USTAR_EXTRA_COLS = ["USTAR", "TKE", "CH4", "CO2", "H2O"]
 ET_COL = "ET"
-CH4_CONC_COL = "CH4_mixratio"          # nmol mol-1 (ppb)
-CO2_DENS_COL = "CO2_density"           # mg m-3 -> converted to ppm with TA and PA
+CH4_CONC_COL = "CH4"                   # nmol mol-1 (ppb)
 TA_COL, PA_COL = "TA_1_1_1", "PA"      # deg C, kPa
 
 # QC dropdowns on the flux tab: (dropdown id, label, flux column, QC column)
@@ -194,6 +195,10 @@ QC_FILTERS = [
     ("qc-h", "H_QC", H_COL, H_QC_COL),
 ]
 M_CH4, M_CO2 = 16.04, 44.01                        # g mol-1
+# Factors from the table's flux units to the plotted units (AmeriFlux fluxes are already
+# nmol CH4 / umol CO2 m-2 s-1, so no conversion is needed)
+FCH4_TO_NMOL = 1.0
+FC_TO_UMOL = 1.0
 
 # Wind direction filter (degrees, after offset). N wraps around 0.
 WD_SECTORS = {
@@ -203,7 +208,7 @@ WD_SECTORS = {
     "W (247.5-292.5)": (247.5, 292.5), "NW (292.5-337.5)": (292.5, 337.5),
 }
 
-# Optional fixed Y ranges, e.g. {"FCH4_mass": [-1, 5]}
+# Optional fixed Y ranges, e.g. {"FCH4": [-50, 300]}
 Y_RANGES = {}
 
 
@@ -223,11 +228,11 @@ def fetch_toa5_text_from_github() -> str:
     (no API rate limit, no login). If a GITHUB_TOKEN environment variable is set on
     Render, the authenticated API (5,000 requests/hour) is used as a fallback.
     """
-    # Local file first: CSFLUX_LOCAL_FILE if set, else the LoggerNet file if it exists (VS Code on the
+    # Local file first: FLUX_LOCAL_FILE (or the older CSFLUX_LOCAL_FILE) if set, else the LoggerNet file if it exists (VS Code on the
     # LoggerNet PC). On Render neither exists, so the GitHub copy is downloaded.
-    local = os.environ.get("CSFLUX_LOCAL_FILE", "").strip().strip('"')
-    if not local and os.path.isfile(LOCAL_CSFLUX_FILE):
-        local = LOCAL_CSFLUX_FILE
+    local = (os.environ.get("FLUX_LOCAL_FILE", "") or os.environ.get("CSFLUX_LOCAL_FILE", "")).strip().strip('"')
+    if not local and os.path.isfile(LOCAL_FLUX_FILE):
+        local = LOCAL_FLUX_FILE
     if local:
         with open(local, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
@@ -291,25 +296,40 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
         if c != TIME_COL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Water vapour flux (not in CSFlux table): FH2O = LE / lambda(T) / M_H2O  -> mmol m-2 s-1
-    if "LE" in df.columns:
-        t = df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0
-        lam = (2.501 - 0.00237 * t) * 1e6                     # J kg-1
-        df["FH2O"] = df["LE"] / lam / 18.015 * 1e6           # mmol m-2 s-1
-
     # Concentrations: 0 means the analyzer had no valid reading -> treat as missing
-    for c in ("CH4_mixratio", "CH4_density", "CO2_density", "H2O_density"):
+    for c in ("CH4", "CO2", "H2O"):
         if c in df.columns:
             df.loc[df[c] <= 0, c] = np.nan
 
-    # CO2 and H2O dry mixing ratios from IRGASON densities (ideal gas, TA and PA)
-    if {"CO2_density", "H2O_density", "PA"} <= set(df.columns):
-        t_k = (df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0) + 273.15
-        n_air = df["PA"] * 1000 / (8.314 * t_k)               # mol m-3 (moist air)
-        n_h2o = df["H2O_density"] / 18.015                    # mol m-3
-        n_dry = n_air - n_h2o
-        df["CO2_mixratio"] = df["CO2_density"] / 44.01 * 1000 / n_dry   # umol mol-1
-        df["H2O_mixratio"] = n_h2o * 1000 / n_dry                       # mmol mol-1
+    ta = df["TA_1_1_1"] if "TA_1_1_1" in df.columns else 20.0
+
+    # Water vapour flux (only if the table doesn't have it): FH2O = LE / lambda(T) / M_H2O
+    if "FH2O" not in df.columns and "LE" in df.columns:
+        lam = (2.501 - 0.00237 * ta) * 1e6                    # J kg-1
+        df["FH2O"] = df["LE"] / lam / 18.015 * 1e6           # mmol m-2 s-1
+
+    # Evapotranspiration from FH2O: mmol m-2 s-1 -> mm h-1 (1 kg m-2 = 1 mm)
+    if "ET" not in df.columns and "FH2O" in df.columns:
+        df["ET"] = df["FH2O"] * 18.015e-6 * 3600
+
+    # Bowen ratio H / LE (undefined when LE is ~0)
+    if "Bowen_ratio" not in df.columns and {"H", "LE"} <= set(df.columns):
+        le = df["LE"].where(df["LE"].abs() > 1e-6)
+        df["Bowen_ratio"] = df["H"] / le
+
+    # Turbulent kinetic energy from the wind-component standard deviations
+    if "TKE" not in df.columns and {"U_SIGMA", "V_SIGMA", "W_SIGMA"} <= set(df.columns):
+        df["TKE"] = 0.5 * (df["U_SIGMA"] ** 2 + df["V_SIGMA"] ** 2 + df["W_SIGMA"] ** 2)
+
+    # Vapour pressure (kPa) and dew point (deg C) from TA and RH (Buck 1981)
+    if {"TA_1_1_1", "RH_1_1_1"} <= set(df.columns):
+        es = 0.61121 * np.exp(17.502 * df["TA_1_1_1"] / (240.97 + df["TA_1_1_1"]))
+        rh = df["RH_1_1_1"].clip(lower=0.1, upper=100)
+        if "e_amb" not in df.columns:
+            df["e_amb"] = es * rh / 100
+        if "T_DP_1_1_1" not in df.columns:
+            x = np.log(df["e_amb"] / 0.61121)
+            df["T_DP_1_1_1"] = 240.97 * x / (17.502 - x)
 
     # Wind direction offset (e.g. sonic mounted pointing the opposite way)
     if WD_COL in df.columns and WD_OFFSET_DEG:
@@ -480,7 +500,7 @@ GAP_FACTOR = 1.5    # a jump longer than 1.5 x the normal record interval is dra
 def with_gaps(df: pd.DataFrame) -> pd.DataFrame:
     """Insert an empty (NaN) row inside every time gap so Plotly breaks the line there instead
     of drawing a straight line across missing records. The normal interval is the median spacing
-    (30 min for CSFlux, 10 s for raw TGAMon)."""
+    (30 min for the flux table, 10 s for raw TGAMon)."""
     if df is None or len(df) < 3 or TIME_COL not in df:
         return df
     t = df[TIME_COL]
@@ -584,8 +604,9 @@ def load_data(force: bool = False):
         if force or age > max_age:
             try:
                 text = fetch_toa5_text_from_github()
-                _DATA["units"] = {**read_units_map_from_toa5_text(text), "FH2O": "mmol m-2 s-1",
-                                  "CO2_mixratio": "umolCO2 mol-1", "H2O_mixratio": "mmolH2O mol-1"}
+                _DATA["units"] = {"FH2O": "mmolH2O m-2 s-1", "ET": "mm hour-1", "TKE": "m2 s-2",
+                                  "e_amb": "kPa", "T_DP_1_1_1": "deg C",
+                                  **read_units_map_from_toa5_text(text)}
                 _DATA["df"] = read_toa5_df_from_text(text)
                 _DATA["error"] = ""
                 df = _DATA["df"]
@@ -839,9 +860,11 @@ TAB_SELECTED_STYLE = {
 }
 
 
-# QC grade filters shown as "< n" (keeps grades 1 .. n-1); value = highest grade kept
-QC_OPTIONS = [{"label": "None", "value": "all"}] + [
-    {"label": f"< {g + 1}", "value": g} for g in range(1, 9)]
+# SSITC flag filters (AmeriFlux: 0 = best, 1 = usable, 2 = bad); value = highest flag kept
+QC_OPTIONS = [{"label": "None", "value": "all"},
+              {"label": "0", "value": 0},
+              {"label": "\u2264 1", "value": 1}]
+QC_NOTE = {o["value"]: o["label"] for o in QC_OPTIONS}
 FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
                        "marginLeft": "6px", "flexWrap": "wrap"}
 TGAMON_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px", "marginLeft": "6px"}
@@ -903,7 +926,7 @@ def filter_flux_df(df: pd.DataFrame, qc_limits, sector, ustar="none") -> pd.Data
     d = df.copy()
     for (_id, _lab, col, qc_col), lim in zip(QC_FILTERS, qc_limits):
         if lim not in (None, "all") and col in d and qc_col in d:
-            cols = [col, "FH2O"] if col == LE_COL and "FH2O" in d else [col]
+            cols = [c for c in ([col, "FH2O", ET_COL] if col == LE_COL else [col]) if c in d]
             d.loc[~(d[qc_col] <= lim), cols] = float("nan")
     if ustar not in (None, "none") and USTAR_COL in d:
         cols = [c for c in [q[2] for q in QC_FILTERS] + [ET_COL, "FH2O", "TAU", "Bowen_ratio"]
@@ -963,7 +986,7 @@ def make_fch4_vs_wd(d: pd.DataFrame) -> go.Figure:
     x = d[[WD_COL, FCH4_COL]].dropna()
     if x.empty:
         return _empty_fig(title)
-    y = x[FCH4_COL] / M_CH4 * 1000            # ugCH4 -> nmol
+    y = x[FCH4_COL] * FCH4_TO_NMOL            # nmol m-2 s-1
     f = go.Figure()
     f.add_trace(go.Scatter(x=x[WD_COL], y=y, mode="markers", name="30-min",
                            marker=dict(size=6, color="#1f77b4", opacity=0.6),
@@ -990,8 +1013,8 @@ def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
     x = d[[FC_COL, FCH4_COL]].dropna()
     if len(x) < 3:
         return _empty_fig(title)
-    xc = x[FC_COL] / M_CO2 * 1000             # mgCO2 -> umol
-    yc = x[FCH4_COL] / M_CH4 * 1000           # ugCH4 -> nmol
+    xc = x[FC_COL] * FC_TO_UMOL               # umol m-2 s-1
+    yc = x[FCH4_COL] * FCH4_TO_NMOL           # nmol m-2 s-1
     slope, intercept = np.polyfit(xc, yc, 1)
     r2 = float(np.corrcoef(xc, yc)[0, 1] ** 2)
     xs = np.linspace(xc.min(), xc.max(), 50)
@@ -1037,7 +1060,7 @@ def make_fch4_surface(d: pd.DataFrame) -> go.Figure:
         return _empty_fig(title)
     wd = x[WD_COL].to_numpy()
     hr = (x[TIME_COL].dt.hour + x[TIME_COL].dt.minute / 60).to_numpy()
-    f = (x[FCH4_COL] / M_CH4 * 1000).to_numpy()              # nmol m-2 s-1
+    f = (x[FCH4_COL] * FCH4_TO_NMOL).to_numpy()              # nmol m-2 s-1
 
     gw, gh = np.arange(0, 361, 10), np.arange(0, 24.01, 0.5)
     sw, sh = 30.0, 1.5
@@ -1070,8 +1093,8 @@ def make_fch4_surface(d: pd.DataFrame) -> go.Figure:
 
 
 DIURNAL_VARS = [  # (column, label, factor, unit)
-    (FCH4_COL, "FCH4", 1000 / M_CH4, "nmol m-2 s-1"),
-    (FC_COL, "FC", 1000 / M_CO2, "µmol m-2 s-1"),
+    (FCH4_COL, "FCH4", FCH4_TO_NMOL, "nmol m-2 s-1"),
+    (FC_COL, "FC", FC_TO_UMOL, "µmol m-2 s-1"),
     (LE_COL, "LE", 1, "W m-2"),
     ("FH2O", "FH2O", 1, "mmol m-2 s-1"),
     (H_COL, "H", 1, "W m-2"),
@@ -1127,14 +1150,14 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
 # =========================
 # Custom "Add Plot" (like the TGA data monitor): pick variables, optional 2nd/3rd/4th y-axis
 # =========================
-CUSTOM_EXCLUDE = {TIME_COL, "RECORD"}
+CUSTOM_EXCLUDE = {TIME_COL, "RECORD", "TIMESTAMP_START", "TIMESTAMP_END"}
 AXIS_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
 BTN = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white", "cursor": "pointer",
        "fontSize": "13px"}
 
 
 def custom_var_options(df: pd.DataFrame):
-    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and not c.upper().endswith("_QC")
+    cols = [c for c in df.columns if c not in CUSTOM_EXCLUDE and not c.upper().endswith(("_QC", "_SSITC_TEST"))
             and pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any()]
     return [{"label": c, "value": c} for c in cols]
 
@@ -1164,18 +1187,18 @@ PLOT_TYPE_FIELDS = {
            ("Third Y-axis", True, "Variable for third Y-axis", "var"),
            ("Fourth Y-axis", True, "Variable for 4th axis", "var")],
     "scatter": [("X variable", False, "e.g. USTAR", "var"),
-                ("Y variable(s)", True, "e.g. FCH4_mass", "var"),
+                ("Y variable(s)", True, "e.g. FCH4", "var"),
                 ("Colour points by (optional)", False, "e.g. TA_1_1_1", "var"),
                 None],
-    "reg": [("X variable (independent)", False, "e.g. FC_mass", "var"),
-            ("Y variable (dependent)", False, "e.g. FCH4_mass", "var"),
+    "reg": [("X variable (independent)", False, "e.g. FC", "var"),
+            ("Y variable (dependent)", False, "e.g. FCH4", "var"),
             None, None],
-    "box": [("Variable", False, "e.g. FCH4_mass", "var"),
+    "box": [("Variable", False, "e.g. FCH4", "var"),
             ("Group by", False, "Choose grouping", "group"),
             None, None],
-    "fp": [("Variable", False, "e.g. FCH4_mass", "var"), None, None, None],
-    "diurnal": [("Left axis", False, "e.g. CH4_mixratio", "var"),
-                ("Right axis (optional)", False, "e.g. FCH4_mass", "var"),
+    "fp": [("Variable", False, "e.g. FCH4", "var"), None, None, None],
+    "diurnal": [("Left axis", False, "e.g. CH4", "var"),
+                ("Right axis (optional)", False, "e.g. FCH4", "var"),
                 ("2nd right axis (optional)", False, "e.g. USTAR", "var"),
                 ("3rd right axis (optional)", False, "e.g. TA_1_1_1", "var")],
 }
@@ -1851,7 +1874,7 @@ def update_custom_specs(_add, _clear, sel, y2, y3, y4, specs, ptype, tab_value):
 )
 def configure_plot_type(ptype, tab_value=None):
     """Relabel / show / hide the 4 variable dropdowns to match the selected plot type;
-    variables come from the TGAMon file on the TGAMon tab, else from CSFlux."""
+    variables come from the TGAMon file on the TGAMon tab, else from the AmeriFlux table."""
     fields = PLOT_TYPE_FIELDS.get(ptype or "ts", PLOT_TYPE_FIELDS["ts"])
     df = load_tgamon()[0] if (ENABLE_TGAMON and tab_value == TGAMON_TAB) else load_data()[0]
     var_opts = custom_var_options(df) if not df.empty else []
@@ -1915,7 +1938,7 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
 
     # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
-    notes = [f"{lab}: {'none' if lim in (None, 'all') else ('< ' + str(int(lim) + 1))}"
+    notes = [f"{lab}: {'none' if lim in (None, 'all') else QC_NOTE.get(lim, lim)}"
              for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
              (f"u*: none" if ustar in (None, 'none') else
               f"u* \u2264 {ustar} m/s removed ({int((dff[USTAR_COL] <= float(ustar)).sum()) if USTAR_COL in dff else 0} half-hours)"),
@@ -1993,7 +2016,7 @@ app.clientside_callback(
 # Local run (Render uses gunicorn instead)
 # =========================
 # VS Code: open this folder, run  pip install -r requirements.txt , then press F5 / "Run Python File".
-# Optional: set CSFLUX_LOCAL_FILE=C:\Campbellsci\LoggerNet\Data\Cattle_Experiment_Eagle_TGA310_CSFlux.dat
+# Optional: set FLUX_LOCAL_FILE=C:\Campbellsci\LoggerNet\Data\Cattle_Experiment_Eagle_TGA310_AmrFlux.dat
 # to read the LoggerNet file directly instead of GitHub.
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
