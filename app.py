@@ -97,6 +97,9 @@ TABS = {
 # Wind direction correction: added to WD (compass wind direction) when the data is read
 WD_COL = "WD"
 WD_OFFSET_DEG = 180
+# The offset is applied only to records with TIMESTAMP at or before this time (sonic orientation was
+# corrected on 2026-10-06 at 10:30; records after it are already correct). Set to None to offset all records.
+WD_OFFSET_UNTIL = pd.Timestamp("2026-10-06 10:30:00")
 WS_COL = "WS"
 
 FLUX_TAB = "Flux and Meteorology"
@@ -334,8 +337,10 @@ def read_toa5_df_from_text(toa5_text: str) -> pd.DataFrame:
             df["T_DP_1_1_1"] = 240.97 * x / (17.502 - x)
 
     # Wind direction offset (e.g. sonic mounted pointing the opposite way)
+    # Only records up to WD_OFFSET_UNTIL are corrected; data collected after it are left as logged.
     if WD_COL in df.columns and WD_OFFSET_DEG:
-        df[WD_COL] = (df[WD_COL] + WD_OFFSET_DEG) % 360
+        old = df[TIME_COL] <= WD_OFFSET_UNTIL if WD_OFFSET_UNTIL is not None else slice(None)
+        df.loc[old, WD_COL] = (df.loc[old, WD_COL] + WD_OFFSET_DEG) % 360
 
     # Remove duplicate records (logger re-collection) and sort by time
     df = df.drop_duplicates(subset=[TIME_COL], keep="last").sort_values(TIME_COL).reset_index(drop=True)
