@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 Dash app: AmeriFlux (TGA310 methane EC) dashboard.
 
 - Reads Cattle_Experiment_Eagle_TGA310_AmrFlux.dat (AmeriFlux-format table) from GitHub (Prajaya2017/cattle_methane_flux, main)
@@ -23,6 +23,7 @@ import os
 os.environ["DASH_JUPYTER_MODE"] = "_none"
 
 import math
+import re as _re
 import threading
 import time
 from io import StringIO
@@ -33,7 +34,35 @@ import pandas as pd
 from dash import Dash, dcc, html, Input, Output, State, ALL
 from urllib.parse import quote
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
+
+
+# =========================
+# Look and feel (one Plotly template for every figure; page styling is in assets/theme.css)
+# =========================
+FONT_FAMILY = "Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+INK, INK_MUTED, GRID = "#1f2a33", "#5f6b76", "#e9edf1"
+# Categorical palette in fixed order (colour-blind checked); slot 1 is used for single-series plots
+SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+
+pio.templates["usu_flux"] = go.layout.Template(layout=go.Layout(
+    font=dict(family=FONT_FAMILY, size=11, color=INK),
+    title=dict(font=dict(family=FONT_FAMILY, size=13, color=INK), x=0.5, xanchor="center"),
+    colorway=SERIES_COLORS,
+    paper_bgcolor="white", plot_bgcolor="white",
+    xaxis=dict(gridcolor=GRID, linecolor="#c9d1d9", zerolinecolor="#c9d1d9", ticks="outside",
+               tickcolor="#c9d1d9", ticklen=3, tickfont=dict(color=INK_MUTED), showline=True),
+    yaxis=dict(gridcolor=GRID, linecolor="#c9d1d9", zerolinecolor="#c9d1d9", ticks="outside",
+               tickcolor="#c9d1d9", ticklen=3, tickfont=dict(color=INK_MUTED), showline=True),
+    polar=dict(bgcolor="white", angularaxis=dict(gridcolor=GRID, linecolor="#c9d1d9"),
+               radialaxis=dict(gridcolor=GRID, linecolor="#c9d1d9")),
+    hoverlabel=dict(bgcolor="white", bordercolor="#c9d1d9", font=dict(family=FONT_FAMILY, size=12, color=INK)),
+    legend=dict(font=dict(size=11, color=INK_MUTED)),
+    # vertical tool bar on the right edge, so it does not cover the plot title
+    modebar=dict(orientation="v", bgcolor="rgba(255,255,255,0.7)", color="#8a95a0", activecolor="#2a78d6"),
+))
+pio.templates.default = "plotly_white+usu_flux"
 
 
 # =========================
@@ -215,6 +244,66 @@ WD_SECTORS = {
 
 # Optional fixed Y ranges, e.g. {"FCH4": [-50, 300]}
 Y_RANGES = {}
+
+# Full variable names, shown when the mouse hovers over a plot title
+LONG_NAMES = {
+    "FCH4": "Methane (CH₄) flux",
+    "FC": "Carbon dioxide (CO₂) flux",
+    "LE": "Latent heat flux",
+    "H": "Sensible heat flux",
+    "ET": "Evapotranspiration (from water vapor flux)",
+    "FH2O": "Water vapor (H₂O) flux",
+    "TAU": "Momentum flux (Reynolds stress)",
+    "USTAR": "Friction velocity (u*)",
+    "TKE": "Turbulent kinetic energy",
+    "Bowen_ratio": "Bowen ratio (sensible / latent heat flux, H/LE)",
+    "CH4": "Methane (CH₄) mole fraction",
+    "CO2": "Carbon dioxide (CO₂) mole fraction",
+    "H2O": "Water vapor (H₂O) mole fraction",
+    "CH4_SIGMA": "Standard deviation of CH₄ mole fraction",
+    "CO2_SIGMA": "Standard deviation of CO₂ mole fraction",
+    "H2O_SIGMA": "Standard deviation of H₂O mole fraction",
+    "TA_1_1_1": "Air temperature",
+    "TS_1_1_1": "Soil temperature",
+    "RH_1_1_1": "Relative humidity",
+    "T_DP_1_1_1": "Dew point temperature",
+    "e_amb": "Ambient vapor pressure",
+    "VPD": "Vapor pressure deficit",
+    "PA": "Atmospheric (air) pressure",
+    "WS": "Wind speed (mean horizontal)",
+    "WS_MAX": "Maximum wind speed",
+    "WD": "Wind direction",
+    "SWC_1_1_1": "Soil water content",
+    "U_SIGMA": "Standard deviation of streamwise wind (u)",
+    "V_SIGMA": "Standard deviation of crosswind (v)",
+    "W_SIGMA": "Standard deviation of vertical wind (w)",
+    "T_SONIC": "Sonic temperature",
+    "T_SONIC_SIGMA": "Standard deviation of sonic temperature",
+    "MO_LENGTH": "Monin–Obukhov length",
+    "zL": "Stability parameter (z/L)",
+    "PBLH_F": "Planetary boundary layer height",
+    "FETCH_MAX": "Distance of maximum footprint contribution",
+    "FETCH_70": "Fetch containing 70% of the flux footprint",
+    "FETCH_80": "Fetch containing 80% of the flux footprint",
+    "FETCH_90": "Fetch containing 90% of the flux footprint",
+}
+
+
+def long_name(var: str) -> str:
+    """Full name of a variable for tooltips (the column name itself if unknown)."""
+    if var in LONG_NAMES:
+        return LONG_NAMES[var]
+    base = _re.sub(r"(_\d+){3}$", "", var) if isinstance(var, str) else var
+    for k, v in LONG_NAMES.items():
+        if _re.sub(r"(_\d+){3}$", "", k) == base:
+            return v
+    return var
+
+
+def title_tip(*vars_) -> str:
+    """Tooltip text: 'FCH4 = Methane (CH4) flux' for each variable that has a full name."""
+    lines = [f"{v} — {long_name(v)}" for v in vars_ if v and long_name(v) != v]
+    return "\n".join(lines)
 
 
 # =========================
@@ -405,7 +494,7 @@ def choose_axis_settings(dff: pd.DataFrame):
     return "M6", "%y/%m/%d"
 
 
-COMBO_COLORS = ["#1f77b4", "#8c564b", "#2ca02c", "#d62728"]
+COMBO_COLORS = SERIES_COLORS[:4]
 
 
 def panel_vars(panel):
@@ -415,22 +504,14 @@ def panel_vars(panel):
 
 PANEL_HEIGHT_PX = 260
 
-# Maximize icon (same as TGA data monitor)
-_MAX_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28" fill="none">
-<path d="M9 5H5C3.34315 5 2 6.34315 2 8V23C2 24.6569 3.34315 26 5 26H20C21.6569 26 23 24.6569 23 23V19"
- stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M14 14L25 3" stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M18 3H25V10" stroke="#1f77b4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>"""
+# Maximize icon
+_MAX_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+<rect x="3" y="3" width="10" height="10" rx="0.5" stroke="#2a78d6" stroke-width="1.5"/></svg>"""   # Windows-style maximize box
 MAXIMIZE_ICON_URI = "data:image/svg+xml;utf8," + quote(_MAX_SVG)
 
-MAX_BTN_STYLE = {"padding": "2px", "borderRadius": "4px", "border": "1px solid #1f77b4",
-                 "backgroundColor": "white", "cursor": "pointer", "width": "22px", "height": "22px",
-                 "display": "flex", "alignItems": "center", "justifyContent": "center"}
-CARD_STYLE = {"border": "1px solid #ddd", "borderRadius": "10px", "padding": "6px",
-              "backgroundColor": "white", "boxShadow": "0 1px 4px rgba(0,0,0,0.08)", "minWidth": 0}
+CARD_STYLE = {"minWidth": 0}     # look of the cards is in assets/theme.css (.plot-card)
 MODAL_HIDDEN = {"display": "none", "position": "fixed", "top": 0, "left": 0, "width": "100%",
-                "height": "100%", "backgroundColor": "rgba(0,0,0,0.45)", "zIndex": 9999,
+                "height": "100%", "backgroundColor": "rgba(15,23,32,0.55)", "zIndex": 9999,
                 "justifyContent": "center", "alignItems": "center"}
 
 
@@ -485,20 +566,18 @@ def plot_card(fig: go.Figure, idx: int, height: int | None = None, style: dict |
     """Plot in a card with a maximize button (opens the figure in a large pop-up)."""
     fig = prettify_fig(fig)
     h = height or (fig.layout.height or PANEL_HEIGHT_PX)
-    return html.Div(style={**CARD_STYLE, **(style or {})}, children=[
-        html.Div(style={"display": "flex", "justifyContent": "flex-end", "marginBottom": "2px"},
-                 children=[html.Button(
-                     html.Img(src=MAXIMIZE_ICON_URI, style={"width": "14px", "height": "14px",
-                                                            "display": "block"}),
-                     id={"type": "max-btn", "index": idx}, n_clicks=0, title="Maximize",
-                     style=MAX_BTN_STYLE)]),
+    return html.Div(className="plot-card", style={**CARD_STYLE, **(style or {})}, children=[
+        html.Button(html.Img(src=MAXIMIZE_ICON_URI, className="max-icon"),
+                    id={"type": "max-btn", "index": idx}, n_clicks=0, title="Maximize this plot",
+                    className="card-max-btn"),
         dcc.Graph(id={"type": "card-graph", "index": idx}, figure=fig,
-                  style={"height": f"{h}px"}, config={"displaylogo": False}),
+                  style={"height": f"{h}px"},
+                  config={"displaylogo": False,
+                          "modeBarButtonsToRemove": ["select2d", "lasso2d", "autoScale2d"]}),
     ])
 
 
-PANEL_COLORS = ["#636efa", "#EF553B", "#00cc96", "#ab63fa", "#FFA15A",
-                "#19d3f3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"]
+PANEL_COLORS = SERIES_COLORS
 
 
 GAP_FACTOR = 1.5    # a jump longer than 1.5 x the normal record interval is drawn as a gap
@@ -537,16 +616,18 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
     if isinstance(panel, str):
         title = format_title(panel, units_map)
         series = [(panel, panel, color, False)]
+        tip = title_tip(panel)
     else:
         title = panel[0]
         series = [(col, lab, COMBO_COLORS[k % len(COMBO_COLORS)], True)
                   for k, (col, lab) in enumerate(panel[1]) if col in df.columns]
+        tip = title_tip(*[c for c, _ in panel[1]])
     fig = go.Figure()
     for col, lab, color, show in series:
         fig.add_trace(go.Scatter(
             x=df[TIME_COL], y=df[col], mode="lines+markers",
             marker=dict(size=3, color=color) if color else dict(size=3),
-            line=dict(color=color) if color else None, name=lab, showlegend=show,
+            line=dict(color=color, width=1.5) if color else dict(width=1.5), name=lab, showlegend=show,
             hovertemplate=("%{x|%y/%m/%d %H:%M}<br>" + f"{lab}: " + "%{y}<extra></extra>"),
         ))
         if col in Y_RANGES:
@@ -555,7 +636,8 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
         if rm in df.columns and df[rm].notna().any():         # points removed by the u* filter
             fig.add_trace(go.Scatter(
                 x=df[TIME_COL], y=df[rm], mode="markers",
-                marker=dict(size=4, color="rgba(150,150,150,0.8)", symbol="x"),
+                marker=dict(size=5, color="rgba(120,130,140,0.75)", symbol="x-thin",
+                            line=dict(width=1.2, color="rgba(120,130,140,0.75)")),
                 name=f"removed (u* \u2264 {_ustar_threshold(df)} m/s)", showlegend=True,
                 hovertemplate="%{x|%y/%m/%d %H:%M}<br>removed: %{y}<extra></extra>",
             ))
@@ -564,10 +646,11 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
                      tickformat=tickformat, tickangle=30, tickfont=dict(size=10))
     fig.update_yaxes(tickfont=dict(size=10))
     fig.update_layout(
-        title=dict(text=title, x=0.5, xanchor="center", font=dict(size=14, color="#333")),
-        height=PANEL_HEIGHT_PX, margin=dict(l=45, r=10, t=40, b=45),
+        title=dict(text=title, x=0.5, xanchor="center"),
+        height=PANEL_HEIGHT_PX, margin=dict(l=48, r=34, t=40, b=45),
         legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top",
-                    bgcolor="rgba(255,255,255,0.7)", font=dict(size=11)),
+                    bgcolor="rgba(255,255,255,0.8)", font=dict(size=10)),
+        meta={"tip": tip},
     )
     return fig
 
@@ -575,13 +658,19 @@ def make_panel_figure(df, panel, units_map, dtick, tickformat, color=None) -> go
 def panel_grid(df, vars_list, units_map, dtick, tickformat, title_text, start_idx=0):
     """Grid of individual plot cards (each with its own maximize button)."""
     cards = [plot_card(make_panel_figure(df, p, units_map, dtick, tickformat,
-                                         color=PANEL_COLORS[i % len(PANEL_COLORS)]), start_idx + i)
+                                         color=SERIES_COLORS[0]), start_idx + i)
              for i, p in enumerate(vars_list)]
-    return html.Div([
-        html.Div(title_text, style={"textAlign": "center", "fontSize": "17px", "color": "#333",
-                                    "margin": "8px 0"}),
-        html.Div(cards, style={"display": "grid", "gap": "10px",
-                               "gridTemplateColumns": "repeat(auto-fill, minmax(260px, 1fr))"}),
+    return html.Div(className="section", children=[
+        section_header("Time series", title_text),
+        html.Div(cards, className="card-grid"),
+    ])
+
+
+def section_header(title, sub=None):
+    """Heading above a group of plots."""
+    return html.Div(className="section-header", children=[
+        html.H2(title, className="section-title"),
+        html.Span(sub, className="section-sub") if sub else None,
     ])
 
 
@@ -637,7 +726,7 @@ def load_data(force: bool = False):
 
 def no_data_message():
     return html.Div(
-        style={"textAlign": "center", "marginTop": "40px", "color": "#555"},
+        className="empty-state",
         children=[
             html.H4("Waiting for data from GitHub"),
             html.P(f"{GITHUB_REPO} / {FILENAME} (branch {BRANCH}) could not be read yet."),
@@ -674,7 +763,7 @@ def setup_layout():
         ])
     return html.Iframe(
         src=app.get_asset_url(SETUP_PAGE),
-        style={"width": "100%", "height": "calc(100vh - 140px)", "minHeight": "600px",
+        style={"width": "100%", "height": "calc(100vh - 170px)", "minHeight": "600px",
                "border": "none"},
         title="Site setup",
     )
@@ -854,26 +943,11 @@ def tgamon_content(start_date, end_date, display, custom_specs):
 # =========================
 # Layout
 # =========================
-TAB_STYLE = {
-    "padding": "4px 12px",
-    "fontSize": "14px",
-    "fontWeight": "bold",
-    "height": "34px",
-    "lineHeight": "24px",
-    "border": "1px solid #e6d3a3",
-    "borderBottom": "none",
-    "borderRadius": "12px 12px 0 0",
-    "background": "linear-gradient(180deg, #fffaf0 0%, #f7ebc9 100%)",
-    "color": "#8a6508",
-    "marginRight": "6px",
-}
-TAB_SELECTED_STYLE = {
-    **TAB_STYLE,
-    "background": "linear-gradient(135deg, #a8770a 0%, #d19a1a 100%)",
-    "color": "white",
-    "border": "1px solid #a8770a",
-    "boxShadow": "0 -2px 8px rgba(168,119,10,0.30)",
-}
+TAB_STYLE = {"padding": "9px 20px", "fontSize": "14px", "fontWeight": "500", "color": "#5f6b76",
+             "backgroundColor": "#eef2f7", "border": "1px solid #dde3ea", "borderBottom": "none",
+             "borderRadius": "8px 8px 0 0", "height": "auto", "lineHeight": "20px", "marginRight": "6px"}
+TAB_SELECTED_STYLE = {**TAB_STYLE, "fontWeight": "600", "color": "#1f63b8", "backgroundColor": "#f5f7fa",
+                      "borderTop": "3px solid #2a78d6"}
 
 
 # SSITC flag filters (AmeriFlux: 0 = best, 1 = usable, 2 = bad); value = highest flag kept
@@ -882,19 +956,10 @@ QC_OPTIONS = [{"label": "None", "value": "all"},
               {"label": "> 0", "value": 0},
               {"label": "> 1", "value": 1}]
 QC_NOTE = {o["value"]: o["label"] + " excluded" for o in QC_OPTIONS}
-FLUX_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
-                       "marginLeft": "6px", "flexWrap": "wrap"}
-TGAMON_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px", "marginLeft": "6px"}
-WD_CONTROLS_STYLE = {"display": "inline-flex", "alignItems": "center", "gap": "6px",
-                     "marginLeft": "6px"}
-WD_SUMMARY_STYLE = {"cursor": "pointer", "listStyle": "none", "border": "1px solid #ccc",
-                    "borderRadius": "4px", "padding": "6px 10px", "minWidth": "90px",
-                    "fontSize": "14px", "backgroundColor": "white", "userSelect": "none"}
-WD_PANEL_STYLE = {"position": "absolute", "top": "38px", "left": "0", "zIndex": 1000,
-                  "backgroundColor": "white", "border": "1px solid #ccc", "borderRadius": "4px",
-                  "boxShadow": "0 4px 12px rgba(0,0,0,0.15)", "padding": "8px 12px",
-                  "minWidth": "190px"}
-WD_BTN_STYLE = {"fontSize": "12px", "padding": "2px 8px", "cursor": "pointer"}
+# Toolbar groups: look is in assets/theme.css; these dicts only switch them on/off per tab
+FLUX_CONTROLS_STYLE = {"display": "contents"}
+TGAMON_CONTROLS_STYLE = {"display": "contents"}
+WD_CONTROLS_STYLE = {"display": "contents"}
 
 
 def in_sector(wd: pd.Series, sector: str) -> pd.Series:
@@ -990,6 +1055,8 @@ def make_wind_rose(d: pd.DataFrame) -> go.Figure:
                                 hovertemplate="%{theta}: %{r:.1f}%<extra>" + lab + " m/s</extra>"))
     f.update_layout(
         title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=60, t=60, b=70),
+        meta={"tip": "Wind rose — how often the wind blew from each direction, by wind-speed class\n"
+                     + title_tip(WD_COL, WS_COL)},
         legend=dict(title="Wind speed (m/s)", orientation="h", x=0.5, xanchor="center",
                     y=-0.08, yanchor="top", font=dict(size=11)),
         polar=dict(angularaxis=dict(direction="clockwise", rotation=90),
@@ -1008,15 +1075,16 @@ def make_fch4_vs_wd(d: pd.DataFrame) -> go.Figure:
     y = x[FCH4_COL] * FCH4_TO_NMOL            # nmol m-2 s-1
     f = go.Figure()
     f.add_trace(go.Scatter(x=x[WD_COL], y=y, mode="markers", name="30-min",
-                           marker=dict(size=6, color="#1f77b4", opacity=0.6),
+                           marker=dict(size=6, color=SERIES_COLORS[0], opacity=0.55),
                            hovertemplate="WD %{x:.0f}°<br>FCH4 %{y:.1f}<extra></extra>"))
     # sector means (22.5 deg)
     sec = ((x[WD_COL] // 22.5) * 22.5 + 11.25)
     m = y.groupby(sec).mean()
     f.add_trace(go.Scatter(x=m.index, y=m.values, mode="lines+markers", name="Sector mean",
-                           line=dict(color="#d62728", width=2)))
+                           line=dict(color=SERIES_COLORS[1], width=2), marker=dict(size=8)))
     f.update_layout(
-        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=20, t=60, b=50),
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=40, t=60, b=50),
+        meta={"tip": title_tip(FCH4_COL, WD_COL)},
         xaxis=dict(title="Wind direction (°)", range=[0, 360], tickvals=[0, 90, 180, 270, 360],
                    ticktext=["0 N", "90 E", "180 S", "270 W", "360 N"]),
         yaxis=dict(title="FCH4 (nmol m-2 s-1)"),
@@ -1039,17 +1107,18 @@ def make_fch4_fc_regression(d: pd.DataFrame) -> go.Figure:
     xs = np.linspace(xc.min(), xc.max(), 50)
     f = go.Figure()
     f.add_trace(go.Scatter(x=xc, y=yc, mode="markers", name="30-min",
-                           marker=dict(size=6, color="#2ca02c", opacity=0.6),
+                           marker=dict(size=6, color=SERIES_COLORS[0], opacity=0.55),
                            hovertemplate="FC %{x:.2f}<br>FCH4 %{y:.1f}<extra></extra>"))
     f.add_trace(go.Scatter(x=xs, y=slope * xs + intercept, mode="lines", name="Linear fit",
-                           line=dict(color="#d62728", width=2)))
+                           line=dict(color=SERIES_COLORS[1], width=2)))
     f.add_annotation(x=0.02, y=0.98, xref="paper", yref="paper", xanchor="left", yanchor="top",
                      showarrow=False, align="left", bgcolor="rgba(255,255,255,0.8)",
                      text=(f"y = {slope:.3f} x {'+' if intercept >= 0 else '-'} {abs(intercept):.3f}"
                            f"<br>R² = {r2:.3f}, n = {len(x)}"))
     f.update_layout(
-        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=20, t=60, b=50),
+        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=40, t=60, b=50),
         xaxis=dict(title="FC (µmol m-2 s-1)"), yaxis=dict(title="FCH4 (nmol m-2 s-1)"),
+        meta={"tip": title_tip(FCH4_COL, FC_COL)},
         legend=dict(x=0.99, xanchor="right", y=0.01, yanchor="bottom",
                     bgcolor="rgba(255,255,255,0.7)"),
     )
@@ -1103,6 +1172,8 @@ def make_fch4_surface(d: pd.DataFrame) -> go.Figure:
     ))
     fig.update_layout(
         title=dict(text=title + f" \u00b7 n = {len(f)}", x=0.5), height=460,
+        meta={"tip": "Smoothed mean methane flux by wind direction and hour of day "
+                     "(dots = measured half-hours)\n" + title_tip(FCH4_COL, WD_COL)},
         margin=dict(l=55, r=20, t=60, b=50),
         xaxis=dict(title="Wind direction (\u00b0)", range=[0, 360],
                    tickvals=[0, 90, 180, 270, 360], ticktext=["0 N", "90 E", "180 S", "270 W", "360 N"]),
@@ -1129,7 +1200,7 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
     """Mean by time of day (30-min bins) with a shaded +/- 1 standard deviation band."""
     fig = make_subplots(rows=1, cols=len(DIURNAL_VARS), horizontal_spacing=0.06,
                         subplot_titles=[f"{lab} ({u})" for _c, lab, _k, u in DIURNAL_VARS])
-    colors = ["#1f77b4", "#d62728", "#2ca02c", "#17becf", "#9467bd"]
+    colors = SERIES_COLORS[:5]
     hod = d[TIME_COL].dt.hour + d[TIME_COL].dt.minute / 60
     first = True
     for i, (col, lab, k, _u) in enumerate(DIURNAL_VARS, start=1):
@@ -1160,6 +1231,9 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
         fig.update_xaxes(range=[0, 24], dtick=6, title_text="Hour of day", row=1, col=i)
         first = False
     fig.update_layout(title=dict(text="Diurnal cycle (mean ± 1 SD)", x=0.5), height=400,
+                      meta={"tip": "Mean by time of day (30-min bins), shaded ± 1 standard deviation\n"
+                                   + title_tip(*[c for c, *_ in DIURNAL_VARS]),
+                            "ann_tips": [title_tip(c) for c, *_ in DIURNAL_VARS]},
                       margin=dict(l=40, r=20, t=90, b=50),
                       legend=dict(orientation="h", x=1, xanchor="right", y=1.12, yanchor="bottom"))
     fig.update_annotations(font=dict(size=13))
@@ -1170,9 +1244,8 @@ def make_diurnal(d: pd.DataFrame) -> go.Figure:
 # Custom "Add Plot" (like the TGA data monitor): pick variables, optional 2nd/3rd/4th y-axis
 # =========================
 CUSTOM_EXCLUDE = {TIME_COL, "RECORD", "TIMESTAMP_START", "TIMESTAMP_END"}
-AXIS_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
-BTN = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white", "cursor": "pointer",
-       "fontSize": "13px"}
+AXIS_COLORS = SERIES_COLORS[:4]
+BTN = {}                       # buttons are styled by class in assets/theme.css
 
 
 def custom_var_options(df: pd.DataFrame):
@@ -1184,7 +1257,7 @@ def custom_var_options(df: pd.DataFrame):
 
 # ---- Add Plot: plot types and what each of the 4 dropdowns means for that type ----
 CUSTOM_DD_IDS = ["all-variables-dropdown", "secondary-y-dropdown", "third-y-dropdown", "fourth-y-dropdown"]
-DD_LABEL_STYLE = {"fontSize": "12px", "fontWeight": "bold", "color": "#1b4d3e", "marginBottom": "2px"}
+DD_LABEL_STYLE = {}            # .field-label in assets/theme.css
 PLOT_TYPE_OPTIONS = [
     {"label": "Time series (up to 4 y-axes)", "value": "ts"},
     {"label": "Scatter / comparison (X vs Y)", "value": "scatter"},
@@ -1415,8 +1488,8 @@ def make_box_figure(df, spec, units_map) -> go.Figure:
         vals = df.loc[g == k, y].dropna()
         if len(vals):
             fig.add_trace(go.Box(y=vals, name=f"{k}", boxpoints="outliers", marker=dict(size=3),
-                                 line=dict(width=1.2), fillcolor="rgba(168,119,10,0.25)",
-                                 marker_color="#a8770a", hovertemplate=f"{k}: " + "%{y}<extra></extra>"))
+                                 line=dict(width=1.2), fillcolor=_rgba(SERIES_COLORS[0], 0.2),
+                                 marker_color=SERIES_COLORS[0], hovertemplate=f"{k}: " + "%{y}<extra></extra>"))
     # n per group above each box (only when there are few groups, to avoid clutter)
     if len(fig.data) <= 12:
         for tr in fig.data:
@@ -1430,7 +1503,7 @@ def make_box_figure(df, spec, units_map) -> go.Figure:
     return fig
 
 
-DIURNAL_AXIS_COLORS = ["#8c510a", "#1f77b4", "#2ca02c", "#9467bd"]
+DIURNAL_AXIS_COLORS = SERIES_COLORS[:4]
 
 
 def make_diurnal_multi_figure(df, spec, units_map) -> go.Figure:
@@ -1627,17 +1700,24 @@ def custom_section(df, specs, units_map, dtick, tickformat):
         t = sp.get("type", "ts")
         fig = (makers[t](df, sp, units_map) if t in makers
                else make_custom_figure(df, sp, units_map, dtick, tickformat))
+        fig.update_layout(meta={**(fig.layout.meta or {}),
+                                "tip": title_tip(*dict.fromkeys(c for c in spec_columns(sp) if c))})
         cards.append(plot_card(fig, 1000 + i))
-    return html.Div(style={"marginBottom": "12px"}, children=[
-        html.Div("Added plots", style={"fontWeight": "bold", "color": "#1b4d3e", "margin": "6px 0"}),
-        html.Div(cards, style={"display": "grid", "gap": "10px",
-                               "gridTemplateColumns": "repeat(auto-fill, minmax(520px, 1fr))"}),
+    return html.Div(className="section", children=[
+        section_header("Added plots"),
+        html.Div(cards, className="card-grid card-grid-wide"),
     ])
 
 
-SAVE_BTN_STYLE = {"padding": "6px 12px", "borderRadius": "8px", "backgroundColor": "white",
-                  "cursor": "pointer", "fontSize": "13px", "fontWeight": "bold",
-                  "border": "1px solid #a8770a", "color": "#a8770a"}
+SAVE_BTN_STYLE = {}            # .btn classes in assets/theme.css
+
+
+def field(label, *controls, cls=""):
+    """Toolbar control with a small label above it."""
+    return html.Div(className=("field " + cls).strip(), children=[
+        html.Label(label, className="field-label"),
+        html.Div(list(controls), className="field-control"),
+    ])
 
 
 def serve_layout():
@@ -1650,155 +1730,138 @@ def serve_layout():
         min_d = df[TIME_COL].min().date()
         max_d = df[TIME_COL].max().date()
 
-    return html.Div(
-        style={"fontFamily": "Arial", "padding": "10px"},
-        children=[
-            html.Div(
-                style={
-                    "display": "flex",
-                    "flexDirection": "column",
-                    "alignItems": "center",
-                    "justifyContent": "center",
-                    "gap": "8px",
-                },
-                children=[
-                    html.H1("TGA310 Cattle CH\u2084 Emission Measurement", style={
-                        "margin": "4px 0 2px", "textAlign": "center", "fontSize": "24px",
-                        "fontWeight": "800", "color": "#1b4d3e", "letterSpacing": "0.3px"}),
-                    html.Div(
-                        id="range-row",
-                        style={
-                            "display": "inline-flex",
-                            "alignItems": "center",
-                            "justifyContent": "center",
-                            "gap": "10px",
-                            "flexWrap": "wrap",
-                        },
-                        children=[
-                            html.Span("Range:", style={"fontSize": "14px"}),
-                            dcc.DatePickerRange(
-                                id="dp-range",
-                                min_date_allowed=min_d,
-                                max_date_allowed=max_d,
-                                start_date=min_d,
-                                end_date=max_d,
-                                display_format="YYYY-MM-DD",
-                                clearable=True,
-                            ),
-                            html.Div(id="flux-controls", style=FLUX_CONTROLS_STYLE, children=[
-                                *[el for qid, lab, _c, _q in QC_FILTERS for el in (
-                                    html.Span(f"{lab}:", style={"fontSize": "14px"}),
-                                    dcc.Dropdown(id=qid, options=QC_OPTIONS, value="all",
-                                                 clearable=False, style={"width": "84px"}),
-                                )],
-                                html.Span("u*:", style={"fontSize": "14px", "marginLeft": "6px"}),
-                                dcc.Dropdown(id="ustar-filter", options=USTAR_OPTIONS, value="none",
-                                             clearable=False, style={"width": "100px"}),
-                            ]),
-                            html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
-                                html.Span("Wind direction:", style={"fontSize": "14px"}),
-                                html.Details(id="wd-details", style={"position": "relative"}, children=[
-                                    html.Summary(id="wd-summary", children="All ▾",
-                                                 style=WD_SUMMARY_STYLE),
-                                    html.Div(style=WD_PANEL_STYLE, children=[
-                                        html.Div(style={"display": "flex", "gap": "6px",
-                                                        "marginBottom": "6px"}, children=[
-                                            html.Button("Select all", id="wd-all", n_clicks=0,
-                                                        style=WD_BTN_STYLE),
-                                            html.Button("Clear", id="wd-none", n_clicks=0,
-                                                        style=WD_BTN_STYLE),
-                                            html.Button("Done", id="wd-done", n_clicks=0,
-                                                        style={**WD_BTN_STYLE, "marginLeft": "auto",
-                                                               "fontWeight": "bold", "color": "#1b7f5a",
-                                                               "border": "1px solid #1b7f5a"}),
-                                        ]),
-                                        dcc.Checklist(
-                                            id="wd-sector",
-                                            options=[{"label": " " + k, "value": k} for k in WD_SECTORS],
-                                            value=list(WD_SECTORS),      # default: all directions
-                                            labelStyle={"display": "block", "fontSize": "13px",
-                                                        "padding": "2px 0", "cursor": "pointer"},
-                                        ),
-                                    ]),
-                                ]),
-                            ]),
-                            html.Div(id="tgamon-controls", style={**TGAMON_CONTROLS_STYLE, "display": "none"},
-                                     children=[
-                                html.Span("Display:", style={"fontSize": "14px"}),
-                                dcc.Dropdown(id="tgamon-display", options=TGAMON_DISPLAY_OPTIONS, value="30min",
-                                             clearable=False, style={"width": "140px"}),
-                            ]),
-                            # Buttons sit on the same row as Range / QC / u* / Wind direction
-                            html.Button("\u2795 Add Plot", id="toggle-variable-panel-btn", n_clicks=0,
-                                        style={**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a",
-                                               "fontWeight": "bold"}),
-                            html.Button("\u2B07 Save plots (PDF)", id="save-pdf-btn", n_clicks=0,
-                                        title="Save all plots on this tab to a PDF file",
-                                        style=SAVE_BTN_STYLE),
-                        ],
-                    ),
-                    html.Div(id="last-updated", style={"fontSize": "12px", "color": "#666"}),
-                ],
-            ),
-            html.Div(id="variable-panel", style={"display": "none"}, children=[
-                html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center",
-                                "flexWrap": "wrap", "marginBottom": "8px"}, children=[
-                    html.Div("Create additional plot:", style={"fontWeight": "bold"}),
-                    html.Span("Plot type", style={"fontSize": "13px"}),
-                    dcc.Dropdown(id="plot-type", options=PLOT_TYPE_OPTIONS, value="ts", clearable=False,
-                                 style={"width": "260px"}),
-                    html.Span(id="plot-type-hint", style={"fontSize": "12px", "color": "#666"}),
+    return html.Div(className="app-shell", children=[
+        # ---------- Header ----------
+        html.Header(className="app-header", children=[
+            html.Div(className="header-inner", children=[
+                html.Div(className="brand", children=[
+                    html.Div("CH₄", className="brand-mark"),
+                    html.Div([
+                        html.H1("TGA310 Cattle CH₄ Emission Measurement", className="app-title"),
+                        html.Div("Eddy covariance flux monitoring · USU test site · "
+                                 "30-min AmeriFlux-format data", className="app-subtitle"),
+                    ]),
                 ]),
-                html.Div(style={"display": "grid", "gap": "10px", "alignItems": "end", "marginBottom": "10px",
-                                "gridTemplateColumns": "repeat(4, minmax(200px, 1fr))"},
-                         children=[
-                             html.Div(id=f"dd-wrap-{i}", children=[
-                                 html.Div(id=f"dd-label-{i}", style=DD_LABEL_STYLE),
-                                 dcc.Dropdown(id=dd_id, options=var_opts, value=[], multi=True),
-                             ])
-                             for i, dd_id in enumerate(CUSTOM_DD_IDS, start=1)
-                         ]),
-                html.Div(style={"display": "flex", "gap": "10px", "flexWrap": "wrap"}, children=[
-                    html.Button("Add Plot", id="add-plot-btn", n_clicks=0,
-                                style={**BTN, "border": "1px solid #2e8b57", "color": "#2e8b57"}),
-                    html.Button("Clear Added Plots (this tab)", id="clear-selected-vars-btn", n_clicks=0,
-                                style={**BTN, "border": "1px solid #888"}),
+                html.Div(className="status", children=[
+                    html.Span(className="status-dot"),
+                    html.Span(id="last-updated", className="status-text"),
+                ]),
+            ]),
+            # Tabs sit in the header, under the title
+            html.Div(className="header-inner", children=[
+                dcc.Tabs(id="tabs", value=SETUP_TAB, className="app-tabs",
+                         parent_className="app-tabs-parent",
+                         style={"border": "none", "height": "auto"}, children=[
+                    dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
+                    for n in [SETUP_TAB] + tab_names + ([TGAMON_TAB] if ENABLE_TGAMON else [])
+                ]),
+            ]),
+        ]),
+
+        html.Main(className="app-main", children=[
+            # ---------- Toolbar: date range, filters, actions ----------
+            html.Div(id="range-row", className="toolbar", style=RANGE_ROW_STYLE, children=[
+                field("Date range", dcc.DatePickerRange(
+                    id="dp-range", min_date_allowed=min_d, max_date_allowed=max_d,
+                    start_date=min_d, end_date=max_d, display_format="YYYY-MM-DD", clearable=True)),
+                html.Div(id="flux-controls", style=FLUX_CONTROLS_STYLE, children=[
+                    html.Div(className="toolbar-divider"),
+                    *[field(lab.replace("_QC", " QC"),
+                            dcc.Dropdown(id=qid, options=QC_OPTIONS, value="all", clearable=False,
+                                         searchable=False, className="dd-small"))
+                      for qid, lab, _c, _q in QC_FILTERS],
+                    field("u* filter", dcc.Dropdown(id="ustar-filter", options=USTAR_OPTIONS, value="none",
+                                                    clearable=False, searchable=False, className="dd-small")),
+                ]),
+                html.Div(id="wd-controls", style=WD_CONTROLS_STYLE, children=[
+                    field("Wind direction", html.Details(id="wd-details", className="wd-details", children=[
+                        html.Summary(id="wd-summary", children="All ▾", className="wd-summary"),
+                        html.Div(className="wd-panel", children=[
+                            html.Div(className="wd-actions", children=[
+                                html.Button("Select all", id="wd-all", n_clicks=0, className="btn btn-xs"),
+                                html.Button("Clear", id="wd-none", n_clicks=0, className="btn btn-xs"),
+                                html.Button("Done", id="wd-done", n_clicks=0,
+                                            className="btn btn-xs btn-primary", style={"marginLeft": "auto"}),
+                            ]),
+                            dcc.Checklist(
+                                id="wd-sector",
+                                options=[{"label": " " + k, "value": k} for k in WD_SECTORS],
+                                value=list(WD_SECTORS),      # default: all directions
+                                className="wd-checklist",
+                                labelStyle={"display": "block"},
+                            ),
+                        ]),
+                    ])),
+                ]),
+                html.Div(id="tgamon-controls", style={**TGAMON_CONTROLS_STYLE, "display": "none"}, children=[
+                    field("Display", dcc.Dropdown(id="tgamon-display", options=TGAMON_DISPLAY_OPTIONS,
+                                                  value="30min", clearable=False, className="dd-medium")),
+                ]),
+                html.Div(className="toolbar-actions", children=[
+                    html.Button("+ Add plot", id="toggle-variable-panel-btn", n_clicks=0,
+                                className="btn btn-outline"),
+                    html.Button("Save plots (PDF)", id="save-pdf-btn", n_clicks=0,
+                                title="Save all plots on this tab to a PDF file",
+                                className="btn btn-primary"),
+                ]),
+            ]),
+
+            # ---------- Add-plot panel ----------
+            html.Div(id="variable-panel", style={"display": "none"}, className="add-panel", children=[
+                html.Div(className="add-panel-head", children=[
+                    html.Div("Create an additional plot", className="add-panel-title"),
+                    field("Plot type", dcc.Dropdown(id="plot-type", options=PLOT_TYPE_OPTIONS, value="ts",
+                                                    clearable=False, style={"width": "280px"})),
+                    html.Span(id="plot-type-hint", className="hint"),
+                ]),
+                html.Div(className="add-panel-grid", children=[
+                    html.Div(id=f"dd-wrap-{i}", children=[
+                        html.Div(id=f"dd-label-{i}", className="field-label", style=DD_LABEL_STYLE),
+                        dcc.Dropdown(id=dd_id, options=var_opts, value=[], multi=True),
+                    ])
+                    for i, dd_id in enumerate(CUSTOM_DD_IDS, start=1)
+                ]),
+                html.Div(className="add-panel-actions", children=[
+                    html.Button("Add plot", id="add-plot-btn", n_clicks=0, className="btn btn-primary"),
+                    html.Button("Clear added plots (this tab)", id="clear-selected-vars-btn", n_clicks=0,
+                                className="btn btn-ghost"),
                 ]),
             ]),
             dcc.Store(id="custom-specs", storage_type="session", data=[]),
-            dcc.Tabs(id="tabs", value=SETUP_TAB,
-                     style={"borderBottom": "3px solid #a8770a", "marginTop": "6px"}, children=[
-                dcc.Tab(label=n, value=n, style=TAB_STYLE, selected_style=TAB_SELECTED_STYLE)
-                for n in [SETUP_TAB] + tab_names + ([TGAMON_TAB] if ENABLE_TGAMON else [])
-            ]),
-            html.Div(id="tab-content", style={"marginTop": "8px"}),
-            # Pop-up for a maximized plot
-            html.Div(id="modal-overlay", style=MODAL_HIDDEN, children=[
-                html.Div(style={"width": "92%", "height": "88%", "backgroundColor": "white",
-                                "borderRadius": "12px", "padding": "12px",
-                                "boxShadow": "0 8px 24px rgba(0,0,0,0.25)",
-                                "display": "flex", "flexDirection": "column"}, children=[
-                    html.Div(style={"display": "flex", "justifyContent": "flex-end", "marginBottom": "8px"},
-                             children=[html.Button("Close", id="close-modal-btn", n_clicks=0, style={
-                                 "padding": "8px 14px", "borderRadius": "8px", "border": "1px solid #888",
-                                 "backgroundColor": "white", "cursor": "pointer"})]),
-                    dcc.Graph(id="zoom-graph", style={"flex": "1 1 auto", "minHeight": 0},
-                              config={"displaylogo": False}),
+            dcc.Loading(type="dot", color="#2a78d6", delay_show=400,
+                        children=html.Div(id="tab-content", className="tab-body")),
+        ]),
+
+        html.Footer(className="app-footer", children=[
+            html.Span("Campbell Scientific TGA310 trace gas analyzer · eddy covariance system"),
+            html.Span(f"Data refresh every {REFRESH_MINUTES} min · hover a plot title for the full "
+                      "variable name"),
+        ]),
+
+        # Pop-up for a maximized plot
+        html.Div(id="modal-overlay", style=MODAL_HIDDEN, children=[
+            html.Div(className="modal-box", children=[
+                html.Div(className="modal-head", children=[
+                    html.Button("✕  Close", id="close-modal-btn", n_clicks=0, className="btn btn-ghost"),
                 ]),
+                dcc.Graph(id="zoom-graph", style={"flex": "1 1 auto", "minHeight": 0},
+                          config={"displaylogo": False}),
             ]),
-            # Re-check GitHub while the page is open
-            dcc.Interval(id="refresh", n_intervals=0,
-                         interval=(RETRY_SECONDS_WHEN_EMPTY * 1000 if df.empty
-                                   else REFRESH_MINUTES * 60 * 1000)),
-        ],
-    )
+        ]),
+        html.Div(id="title-tooltip", className="title-tooltip"),
+        # Re-check GitHub while the page is open
+        dcc.Interval(id="refresh", n_intervals=0,
+                     interval=(RETRY_SECONDS_WHEN_EMPTY * 1000 if df.empty
+                               else REFRESH_MINUTES * 60 * 1000)),
+    ])
 
 
-# Compact date picker so Range, filters and buttons fit on one row
-app.index_string = app.index_string.replace("</head>", """<style>
-#range-row .dash-datepicker-input{font-size:14px}
-#range-row .dash-dropdown{font-size:14px}
-</style></head>""")
+RANGE_ROW_STYLE = {}          # toolbar is styled by class; only shown / hidden from callbacks
+
+# Google font for the page (the rest of the styling is assets/theme.css)
+app.index_string = app.index_string.replace("</head>", """<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>""")
 
 app.layout = serve_layout
 
@@ -1806,15 +1869,6 @@ app.layout = serve_layout
 # =========================
 # Callbacks
 # =========================
-RANGE_ROW_STYLE = {
-    "display": "inline-flex",
-    "alignItems": "center",
-    "justifyContent": "center",
-    "gap": "10px",
-    "flexWrap": "wrap",
-}
-
-
 @app.callback(
     Output("range-row", "style"),
     Output("last-updated", "style"),
@@ -1826,13 +1880,13 @@ RANGE_ROW_STYLE = {
 )
 def toggle_range(tab_value):
     """Date picker hidden on Setup; QC filters on the flux tab; wind direction on flux + met tabs."""
-    lu = {"fontSize": "12px", "color": "#666"}
+    lu = {}                        # "Last record" sits in the header and is always shown
     hide = {"display": "none"}
     fc = FLUX_CONTROLS_STYLE if tab_value == FLUX_TAB else {**FLUX_CONTROLS_STYLE, **hide}
     wd = WD_CONTROLS_STYLE if tab_value == FLUX_TAB else {**WD_CONTROLS_STYLE, **hide}
     tg = TGAMON_CONTROLS_STYLE if tab_value == TGAMON_TAB else {**TGAMON_CONTROLS_STYLE, **hide}
     if tab_value == SETUP_TAB:
-        return {**RANGE_ROW_STYLE, **hide}, {**lu, **hide}, fc, wd, {**SAVE_BTN_STYLE, **hide}, tg
+        return {**RANGE_ROW_STYLE, **hide}, lu, fc, wd, {**SAVE_BTN_STYLE, **hide}, tg
     return RANGE_ROW_STYLE, lu, fc, wd, SAVE_BTN_STYLE, tg
 
 
@@ -1868,7 +1922,7 @@ def refresh_dates(_n, start_date, end_date, old_max):
     """Extend the picker when new data arrives; follow the latest day if user was viewing it."""
     df, _ = load_data()
     if df.empty:
-        return (None, None, None, None, "No data yet - waiting for GitHub file",
+        return (None, None, None, None, "Waiting for data",
                 RETRY_SECONDS_WHEN_EMPTY * 1000)
 
     new_min = df[TIME_COL].min().date()
@@ -1884,12 +1938,11 @@ def refresh_dates(_n, start_date, end_date, old_max):
     if end_date is None or (old_max is not None and str(end_date)[:10] == str(old_max)[:10]):
         end_date = new_max
     return (new_min, new_max, start_date, end_date,
-            f"Last record: {last_rec}",
+            f"Last record {last_rec}",
             REFRESH_MINUTES * 60 * 1000)
 
 
-PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "border": "1px solid #cfe0d8",
-               "borderRadius": "10px", "backgroundColor": "#f6fbf8"}
+PANEL_STYLE = {"display": "block"}      # .add-panel in assets/theme.css
 
 
 @app.callback(
@@ -1900,7 +1953,7 @@ PANEL_STYLE = {"display": "block", "margin": "8px 0 4px", "padding": "12px", "bo
 )
 def toggle_variable_panel(n, tab_value):
     """Add Plot panel: opened/closed by the button; on the Flux and Meteorology and TGAMon tabs."""
-    btn = {**BTN, "border": "1px solid #1b7f5a", "color": "#1b7f5a", "fontWeight": "bold"}
+    btn = {}
     if tab_value not in (FLUX_TAB, TGAMON_TAB):    # Add Plot on the flux and TGAMon tabs
         return {"display": "none"}, {**btn, "display": "none"}
     return (PANEL_STYLE if (n or 0) % 2 == 1 else {"display": "none"}), btn
@@ -1998,12 +2051,13 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
 
     dff = filter_df_by_datepicker_range(df, start_date, end_date)
     if dff.empty:
-        return html.Div("No data for selected date range.")
+        return empty_state("No data for the selected date range",
+                           "Pick a different start or end date in the toolbar above.")
 
     vars_list = [p for p in pages.get(tab_value, [])
                  if any(v in df.columns for v in panel_vars(p))]
     if not vars_list:
-        return html.Div("No variables to display in this tab.")
+        return empty_state("No variables to display on this tab")
 
     dtick, tickformat = choose_axis_settings(dff)
     s_txt = "" if start_date is None else str(start_date)
@@ -2024,23 +2078,34 @@ def render_tab(tab_value, start_date, end_date, _n, *args):
              "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
                                   for _i, lab, c, _q in QC_FILTERS)]
     if n_records(dfq) == 0:
-        return html.Div("No data for the selected filters. (" + " · ".join(notes) + ")",
-                        style={"textAlign": "center", "marginTop": "30px"})
+        return empty_state("No data for the selected filters", " · ".join(notes))
 
     n = len(vars_list)
-    analysis_style = {"flex": "1 1 380px", "minWidth": "340px"}
     return html.Div([
-        html.Div(" · ".join(notes), style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
+        html.Div(className="filter-summary", children=[
+            html.Span(t, className="chip" + (" chip-strong" if "records" in t else "")) for t in notes]),
         custom_section(dfq, specs_for_tab(custom_specs, FLUX_TAB), units_map, dtick, tickformat),
         panel_grid(dfq, vars_list, units_map, dtick, tickformat, title_range),
-        html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "marginTop": "14px"},
-                 children=[
-                     plot_card(make_wind_rose(dfq), n, style=analysis_style),
-                     plot_card(make_fch4_vs_wd(dfq), n + 1, style=analysis_style),
-                     plot_card(make_fch4_fc_regression(dfq), n + 2, style=analysis_style),
-                     plot_card(make_fch4_surface(dfq), n + 3, style=analysis_style),
-                 ]),
-        html.Div(plot_card(make_diurnal(dfq), n + 4), style={"marginTop": "10px"}),
+        html.Div(className="section", children=[
+            section_header("Wind and source analysis", "Methane flux by wind direction, time of day and CO₂ flux"),
+            html.Div(className="card-grid card-grid-analysis", children=[
+                plot_card(make_wind_rose(dfq), n),
+                plot_card(make_fch4_vs_wd(dfq), n + 1),
+                plot_card(make_fch4_fc_regression(dfq), n + 2),
+                plot_card(make_fch4_surface(dfq), n + 3),
+            ]),
+        ]),
+        html.Div(className="section", children=[
+            section_header("Diurnal cycle"),
+            plot_card(make_diurnal(dfq), n + 4),
+        ]),
+    ])
+
+
+def empty_state(title, detail=None):
+    return html.Div(className="empty-state", children=[
+        html.Div(title, className="empty-title"),
+        html.Div(detail, className="empty-detail") if detail else None,
     ])
 
 
