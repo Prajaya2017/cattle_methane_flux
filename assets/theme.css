@@ -215,6 +215,7 @@ body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: anti
   font-size: 12px; color: var(--ink-2); background: var(--surface);
   border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; white-space: nowrap;
 }
+.chip-warn { color: #9a3412; border-color: #fdba74; background: #fff7ed; font-weight: 600; }
 .chip-strong { color: #1f63b8; border-color: #b9d3f2; background: var(--brand-soft); font-weight: 600; }
 
 /* ---------- Empty / waiting states ---------- */

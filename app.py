@@ -897,6 +897,21 @@ def make_tgamon_figure(df, spec, units_map, dtick, tickformat) -> go.Figure:
     return fig
 
 
+def tgamon_frame(df, start_date, end_date, display):
+    """TGAMon rows for the date range, as 30-min means or original 10 s records."""
+    dff = filter_df_by_datepicker_range(df, start_date, end_date)
+    note_extra = ""
+    if dff.empty:
+        return dff, display, note_extra
+    span_days = (dff[TIME_COL].max() - dff[TIME_COL].min()).total_seconds() / 86400
+    if display == "raw" and span_days > TGAMON_RAW_MAX_DAYS:
+        display = "30min"
+        note_extra = f" · range > {TGAMON_RAW_MAX_DAYS} days, switched to 30 min"
+    if display == "30min":
+        dff = dff.set_index(TIME_COL).resample("30min").mean(numeric_only=True).reset_index()
+    return dff, display, note_extra
+
+
 def tgamon_content(start_date, end_date, display, custom_specs):
     df, units_map, source = load_tgamon()
     if df.empty:
@@ -906,17 +921,10 @@ def tgamon_content(start_date, end_date, display, custom_specs):
             html.P(f"Expected locally at {LOCAL_TGAMON_FILE} (or set TGAMON_LOCAL_FILE), "
                    f"or pushed to GitHub as {TGAMON_FILENAME}.", style={"fontSize": "12px", "color": "#999"}),
         ])
-    dff = filter_df_by_datepicker_range(df, start_date, end_date)
+    dff, display, note_extra = tgamon_frame(df, start_date, end_date, display)
     if dff.empty:
         return html.Div("No TGAMon data for the selected date range.",
                         style={"textAlign": "center", "marginTop": "30px"})
-    span_days = (dff[TIME_COL].max() - dff[TIME_COL].min()).total_seconds() / 86400
-    note_extra = ""
-    if display == "raw" and span_days > TGAMON_RAW_MAX_DAYS:
-        display = "30min"
-        note_extra = f" · range > {TGAMON_RAW_MAX_DAYS} days, switched to 30 min"
-    if display == "30min":
-        dff = dff.set_index(TIME_COL).resample("30min").mean(numeric_only=True).reset_index()
     dtick, tickformat = choose_axis_settings(dff)
     specs = []
     covered = set()
@@ -934,7 +942,8 @@ def tgamon_content(start_date, end_date, display, custom_specs):
             f" · last record {df[TIME_COL].max():%Y-%m-%d %H:%M:%S}{note_extra}")
     return html.Div([
         html.Div(note, style={"textAlign": "center", "fontSize": "12px", "color": "#666"}),
-        custom_section(dff, specs_for_tab(custom_specs, TGAMON_TAB), units_map, dtick, tickformat),
+        html.Div(id="custom-section",
+                 children=custom_section(dff, specs_for_tab(custom_specs, TGAMON_TAB), units_map, dtick, tickformat)),
         html.Div(cards, style={"display": "grid", "gap": "10px", "marginTop": "8px",
                                "gridTemplateColumns": f"repeat({TGAMON_PLOTS_PER_ROW}, minmax(0, 1fr))"}),
     ])
@@ -1688,25 +1697,38 @@ def specs_for_tab(specs, tab):
     return [sp for sp in (specs or []) if spec_home(sp) == tab]
 
 
+CUSTOM_MAKERS = {"scatter": make_scatter_figure, "reg": make_regression_figure,
+                 "box": make_box_figure, "fp": make_fingerprint_figure,
+                 "diurnal": make_diurnal_multi_figure, "polar": make_polar_figure}
+
+
+def valid_custom_specs(df, specs):
+    """Added-plot specs whose variables all exist in the data (their order sets the card index)."""
+    return [sp for sp in (specs or []) if all(c in df.columns for c in spec_columns(sp) if c)]
+
+
+def custom_figure(df, sp, units_map, dtick, tickformat) -> go.Figure:
+    t = sp.get("type", "ts")
+    fig = (CUSTOM_MAKERS[t](df, sp, units_map) if t in CUSTOM_MAKERS
+           else make_custom_figure(df, sp, units_map, dtick, tickformat))
+    fig.update_layout(meta={**(fig.layout.meta or {}),
+                            "tip": title_tip(*dict.fromkeys(c for c in spec_columns(sp) if c))})
+    return fig
+
+
 def custom_section(df, specs, units_map, dtick, tickformat):
-    specs = [sp for sp in (specs or []) if all(c in df.columns for c in spec_columns(sp) if c)]
+    specs = valid_custom_specs(df, specs)
     if not specs:
         return None
-    makers = {"scatter": make_scatter_figure, "reg": make_regression_figure,
-              "box": make_box_figure, "fp": make_fingerprint_figure,
-              "diurnal": make_diurnal_multi_figure, "polar": make_polar_figure}
-    cards = []
-    for i, sp in enumerate(specs):
-        t = sp.get("type", "ts")
-        fig = (makers[t](df, sp, units_map) if t in makers
-               else make_custom_figure(df, sp, units_map, dtick, tickformat))
-        fig.update_layout(meta={**(fig.layout.meta or {}),
-                                "tip": title_tip(*dict.fromkeys(c for c in spec_columns(sp) if c))})
-        cards.append(plot_card(fig, 1000 + i))
+    cards = [plot_card(custom_figure(df, sp, units_map, dtick, tickformat), CUSTOM_IDX0 + i)
+             for i, sp in enumerate(specs)]
     return html.Div(className="section", children=[
         section_header("Added plots"),
         html.Div(cards, className="card-grid card-grid-wide"),
     ])
+
+
+CUSTOM_IDX0 = 1000      # card index of the first added plot
 
 
 SAVE_BTN_STYLE = {}            # .btn classes in assets/theme.css
@@ -1829,6 +1851,8 @@ def serve_layout():
             ]),
             dcc.Store(id="custom-specs", storage_type="session", data=[]),
             dcc.Loading(type="dot", color="#2a78d6", delay_show=400,
+                        target_components={"tab-content": "children"},
+                        overlay_style={"visibility": "visible", "opacity": 0.55, "filter": "blur(1px)"},
                         children=html.Div(id="tab-content", className="tab-body")),
         ]),
 
@@ -2021,85 +2045,222 @@ def configure_plot_type(ptype, tab_value=None):
     return (*styles, *labels, *multis, *holders, *opts, *vals, PLOT_TYPE_HINTS.get(ptype, ""))
 
 
+# ---------- Flux tab: every card, with the columns it depends on ----------
+# The full tab is only rebuilt when the tab, date range or data change. Changing a QC flag,
+# the u* filter or the wind-direction filter re-draws only the cards that use the affected
+# columns, and adding / clearing a plot only re-draws the "Added plots" section.
+
+def flux_frame(start_date, end_date):
+    """(date-filtered data, units, panel list) for the flux tab; data is None when nothing to show."""
+    df, units_map = load_data()
+    if df.empty:
+        return None, units_map, []
+    dff = filter_df_by_datepicker_range(df, start_date, end_date)
+    vars_list = [p for p in pages.get(FLUX_TAB, []) if any(v in df.columns for v in panel_vars(p))]
+    return dff, units_map, vars_list
+
+
+def flux_card_specs(vars_list, custom_specs, dff):
+    """[(card index, set of columns used, maker(dfq, units, dtick, tickformat) -> figure), ...]"""
+    cards = []
+    for i, sp in enumerate(valid_custom_specs(dff, specs_for_tab(custom_specs, FLUX_TAB))):
+        cards.append((CUSTOM_IDX0 + i, set(c for c in spec_columns(sp) if c),
+                      lambda d, u, dt, tf, sp=sp: custom_figure(d, sp, u, dt, tf)))
+    for i, p in enumerate(vars_list):
+        cards.append((i, set(panel_vars(p)),
+                      lambda d, u, dt, tf, p=p: make_panel_figure(d, p, u, dt, tf, color=SERIES_COLORS[0])))
+    n = len(vars_list)
+    cards += [
+        (n, {WD_COL, WS_COL}, lambda d, *_: make_wind_rose(d)),
+        (n + 1, {FCH4_COL, WD_COL}, lambda d, *_: make_fch4_vs_wd(d)),
+        (n + 2, {FCH4_COL, FC_COL}, lambda d, *_: make_fch4_fc_regression(d)),
+        (n + 3, {FCH4_COL, WD_COL}, lambda d, *_: make_fch4_surface(d)),
+        (n + 4, {c for c, *_ in DIURNAL_VARS}, lambda d, *_: make_diurnal(d)),
+    ]
+    return cards
+
+
+def flux_notes(dff, dfq, qc_limits, sector, ustar):
+    notes = [f"{lab}: {'none' if lim in (None, 'all') else QC_NOTE.get(lim, lim)}"
+             for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
+             ("u*: none" if ustar in (None, "none") else
+              f"u* ≤ {ustar} m/s removed ({int((dff[USTAR_COL] <= float(ustar)).sum()) if USTAR_COL in dff else 0} half-hours)"),
+             f"Wind direction: {sectors_label(sector)}",
+             f"{n_records(dfq)} of {len(dff)} records",
+             "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
+                                  for _i, lab, c, _q in QC_FILTERS)]
+    chips = [html.Span(t, className="chip" + (" chip-strong" if "records" in t else "")) for t in notes]
+    if n_records(dfq) == 0:
+        chips.append(html.Span("No data left with these filters", className="chip chip-warn"))
+    return chips
+
+
+def columns_changed_by(trigger_ids):
+    """Columns whose values change when the given filter controls change (None = all columns)."""
+    cols = set()
+    for tid in trigger_ids:
+        if tid == "wd-sector":
+            return None                                   # removes whole records
+        if tid == "ustar-filter":
+            cols |= set([q[2] for q in QC_FILTERS] + [ET_COL, "FH2O", "TAU", "Bowen_ratio"] + USTAR_EXTRA_COLS)
+        for qid, _lab, col, _q in QC_FILTERS:
+            if tid == qid:
+                cols |= {col, "FH2O", ET_COL} if col == LE_COL else {col}
+    return cols
+
+
 @app.callback(
     Output("tab-content", "children"),
     Input("tabs", "value"),
     Input("dp-range", "start_date"),
     Input("dp-range", "end_date"),
     Input("refresh", "n_intervals"),
-    *[Input(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
-    Input("wd-sector", "value"),
-    Input("ustar-filter", "value"),
-    Input("custom-specs", "data"),
     Input("tgamon-display", "value"),
+    *[State(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
+    State("wd-sector", "value"),
+    State("ustar-filter", "value"),
+    State("custom-specs", "data"),
 )
-def render_tab(tab_value, start_date, end_date, _n, *args):
+def render_tab(tab_value, start_date, end_date, _n, tgamon_display, *args):
+    """Builds the whole tab (only when the tab, dates or data change)."""
     nq = len(QC_FILTERS)
-    custom_specs = args[nq + 2] if len(args) > nq + 2 else []
-    tgamon_display = args[nq + 3] if len(args) > nq + 3 else "30min"
-    qc_limits = list(args[:nq])
-    sector = args[nq] if len(args) > nq else None
-    ustar = args[nq + 1] if len(args) > nq + 1 else "none"
+    qc_limits, sector, ustar, custom_specs = list(args[:nq]), args[nq], args[nq + 1], args[nq + 2]
     if tab_value == SETUP_TAB:
-        return setup_layout()
+        return with_placeholders(setup_layout())
     if tab_value == TGAMON_TAB and ENABLE_TGAMON:
-        return tgamon_content(start_date, end_date, tgamon_display, custom_specs)
+        return with_placeholders(tgamon_content(start_date, end_date, tgamon_display or "30min", custom_specs),
+                                 custom=False)
 
-    df, units_map = load_data()
-    if df.empty:
-        return no_data_message()
-
-    dff = filter_df_by_datepicker_range(df, start_date, end_date)
+    dff, units_map, vars_list = flux_frame(start_date, end_date)
+    if dff is None:
+        return with_placeholders(no_data_message())
     if dff.empty:
-        return empty_state("No data for the selected date range",
-                           "Pick a different start or end date in the toolbar above.")
-
-    vars_list = [p for p in pages.get(tab_value, [])
-                 if any(v in df.columns for v in panel_vars(p))]
+        return with_placeholders(empty_state("No data for the selected date range",
+                                             "Pick a different start or end date in the toolbar above."))
     if not vars_list:
-        return empty_state("No variables to display on this tab")
+        return with_placeholders(empty_state("No variables to display on this tab"))
 
     dtick, tickformat = choose_axis_settings(dff)
-    s_txt = "" if start_date is None else str(start_date)
-    e_txt = "" if end_date is None else str(end_date)
-    title_range = f"{s_txt} → {e_txt}".strip(" →")
-
-    if tab_value != FLUX_TAB:
-        return panel_grid(dff, vars_list, units_map, dtick, tickformat, title_range)
-
-    # Flux tab: apply QC + wind-direction filters, then time series + analysis plots
+    title_range = f"{start_date or ''} → {end_date or ''}".strip(" →")
     dfq = filter_flux_df(dff, qc_limits, sector, ustar)
-    notes = [f"{lab}: {'none' if lim in (None, 'all') else QC_NOTE.get(lim, lim)}"
-             for (_i, lab, _c, _q), lim in zip(QC_FILTERS, qc_limits)] + [
-             (f"u*: none" if ustar in (None, 'none') else
-              f"u* \u2264 {ustar} m/s removed ({int((dff[USTAR_COL] <= float(ustar)).sum()) if USTAR_COL in dff else 0} half-hours)"),
-             f"Wind direction: {sectors_label(sector)}",
-             f"{n_records(dfq)} of {len(dff)} records",
-             "valid " + ", ".join(f"{lab.replace('_QC', '')}: {int(dfq[c].notna().sum()) if c in dfq else 0}"
-                                  for _i, lab, c, _q in QC_FILTERS)]
-    if n_records(dfq) == 0:
-        return empty_state("No data for the selected filters", " · ".join(notes))
-
+    figs = {idx: make(dfq, units_map, dtick, tickformat)
+            for idx, _cols, make in flux_card_specs(vars_list, custom_specs, dff)}
     n = len(vars_list)
+    customs = sorted(i for i in figs if i >= CUSTOM_IDX0)
     return html.Div([
-        html.Div(className="filter-summary", children=[
-            html.Span(t, className="chip" + (" chip-strong" if "records" in t else "")) for t in notes]),
-        custom_section(dfq, specs_for_tab(custom_specs, FLUX_TAB), units_map, dtick, tickformat),
-        panel_grid(dfq, vars_list, units_map, dtick, tickformat, title_range),
+        html.Div(id="filter-summary", className="filter-summary",
+                 children=flux_notes(dff, dfq, qc_limits, sector, ustar)),
+        html.Div(id="custom-section", children=custom_block([plot_card(figs[i], i) for i in customs])),
+        html.Div(className="section", children=[
+            section_header("Time series", title_range),
+            html.Div([plot_card(figs[i], i) for i in range(n)], className="card-grid"),
+        ]),
         html.Div(className="section", children=[
             section_header("Wind and source analysis", "Methane flux by wind direction, time of day and CO₂ flux"),
-            html.Div(className="card-grid card-grid-analysis", children=[
-                plot_card(make_wind_rose(dfq), n),
-                plot_card(make_fch4_vs_wd(dfq), n + 1),
-                plot_card(make_fch4_fc_regression(dfq), n + 2),
-                plot_card(make_fch4_surface(dfq), n + 3),
-            ]),
+            html.Div(className="card-grid card-grid-analysis",
+                     children=[plot_card(figs[i], i) for i in range(n, n + 4)]),
         ]),
         html.Div(className="section", children=[
             section_header("Diurnal cycle"),
-            plot_card(make_diurnal(dfq), n + 4),
+            plot_card(figs[n + 4], n + 4),
         ]),
     ])
+
+
+def with_placeholders(content, custom=True):
+    """Hidden 'filter-summary' / 'custom-section' boxes so the filter and add-plot callbacks
+    always have their targets, even on tabs that don't show them."""
+    hidden = {"display": "none"}
+    extra = [html.Div(id="filter-summary", style=hidden)]
+    if custom:
+        extra.append(html.Div(id="custom-section", style=hidden))
+    return html.Div([content, *extra])
+
+
+def custom_block(cards):
+    if not cards:
+        return None
+    return html.Div(className="section", children=[
+        section_header("Added plots"),
+        html.Div(cards, className="card-grid card-grid-wide"),
+    ])
+
+
+@app.callback(
+    Output({"type": "card-graph", "index": ALL}, "figure"),
+    Output("filter-summary", "children"),
+    *[Input(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
+    Input("wd-sector", "value"),
+    Input("ustar-filter", "value"),
+    State("tabs", "value"),
+    State("dp-range", "start_date"),
+    State("dp-range", "end_date"),
+    State("custom-specs", "data"),
+    State({"type": "card-graph", "index": ALL}, "id"),
+    prevent_initial_call=True,
+)
+def apply_flux_filters(*args):
+    """QC / u* / wind-direction change: re-draw only the plots that use the affected columns;
+    every other plot keeps its current figure (and zoom)."""
+    from dash import ctx, no_update
+    nq = len(QC_FILTERS)
+    qc_limits, sector, ustar = list(args[:nq]), args[nq], args[nq + 1]
+    tab_value, start_date, end_date, custom_specs, ids = args[nq + 2:]
+    ids = ids or []
+    if tab_value != FLUX_TAB or not ids:
+        return [no_update] * len(ids), no_update
+    dff, units_map, vars_list = flux_frame(start_date, end_date)
+    if dff is None or dff.empty:
+        return [no_update] * len(ids), no_update
+
+    changed = columns_changed_by([t.split(".")[0] for t in ctx.triggered_prop_ids])
+    dfq = filter_flux_df(dff, qc_limits, sector, ustar)
+    dtick, tickformat = choose_axis_settings(dff)
+    specs = {idx: (cols, make) for idx, cols, make in flux_card_specs(vars_list, custom_specs, dff)}
+    out = []
+    for cid in ids:
+        idx = cid.get("index")
+        if idx not in specs or (changed is not None and not (specs[idx][0] & changed)):
+            out.append(no_update)
+            continue
+        out.append(prettify_fig(specs[idx][1](dfq, units_map, dtick, tickformat)))
+    return out, flux_notes(dff, dfq, qc_limits, sector, ustar)
+
+
+@app.callback(
+    Output("custom-section", "children"),
+    Input("custom-specs", "data"),
+    State("tabs", "value"),
+    State("dp-range", "start_date"),
+    State("dp-range", "end_date"),
+    *[State(qid, "value") for qid, _l, _c, _q in QC_FILTERS],
+    State("wd-sector", "value"),
+    State("ustar-filter", "value"),
+    State("tgamon-display", "value"),
+    prevent_initial_call=True,
+)
+def update_added_plots(custom_specs, tab_value, start_date, end_date, *args):
+    """Add / clear plot: re-draw only the 'Added plots' section, not the whole tab."""
+    from dash import no_update
+    nq = len(QC_FILTERS)
+    qc_limits, sector, ustar, tgamon_display = list(args[:nq]), args[nq], args[nq + 1], args[nq + 2]
+    if tab_value == TGAMON_TAB and ENABLE_TGAMON:
+        df, units_map, _src = load_tgamon()
+        dff, _d, _x = tgamon_frame(df, start_date, end_date, tgamon_display or "30min")
+        if dff.empty:
+            return no_update
+        dtick, tickformat = choose_axis_settings(dff)
+        return custom_section(dff, specs_for_tab(custom_specs, TGAMON_TAB), units_map, dtick, tickformat)
+    if tab_value != FLUX_TAB:
+        return no_update
+    dff, units_map, _vars = flux_frame(start_date, end_date)
+    if dff is None or dff.empty:
+        return no_update
+    dfq = filter_flux_df(dff, qc_limits, sector, ustar)
+    dtick, tickformat = choose_axis_settings(dff)
+    specs = valid_custom_specs(dff, specs_for_tab(custom_specs, FLUX_TAB))
+    return custom_block([plot_card(custom_figure(dfq, sp, units_map, dtick, tickformat), CUSTOM_IDX0 + i)
+                         for i, sp in enumerate(specs)])
 
 
 def empty_state(title, detail=None):

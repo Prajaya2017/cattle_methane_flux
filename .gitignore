@@ -8,3 +8,6 @@ Thumbs.db
 desktop.ini
 
 /Claude outputs
+
+*.log
+*.bak
