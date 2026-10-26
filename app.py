@@ -1453,25 +1453,62 @@ def make_source_map(d: pd.DataFrame) -> go.Figure:
         m = m.interpolate(limit_direction="both").to_numpy()
         th = np.deg2rad(np.arange(17) * 22.5)
         mr = np.append(m, m[0])
-        mlo, mla = _to_lonlat(mr * np.sin(th), mr * np.cos(th))
-        fig.add_trace(go.Scattermap(lon=mlo, lat=mla, mode="lines", name=f"median {pct}% fetch",
-                                    line=dict(color="#ffffff", width=2.5), hoverinfo="skip"))
+        # dotted black line: Scattermap lines can't be dashed, so draw small dots along the path
+        xs_, ys_ = mr * np.sin(th), mr * np.cos(th)
+        seg = np.hypot(np.diff(xs_), np.diff(ys_))
+        step = max(float(np.nanmax(mr)) / 28, 1.0)            # dot spacing in metres
+        px, py = [], []
+        for i in range(16):
+            k = max(int(seg[i] // step), 1)
+            t = np.arange(k) / k
+            px += list(xs_[i] + t * (xs_[i + 1] - xs_[i])); py += list(ys_[i] + t * (ys_[i + 1] - ys_[i]))
+        mlo, mla = _to_lonlat(px, py)
+        fig.add_trace(go.Scattermap(lon=mlo, lat=mla, mode="markers", name=f"median {pct}% fetch",
+                                    marker=dict(size=4, color="#1f2a33"), hoverinfo="skip"))
+    # distance rings (like a polar plot): thin circles, distance labels, compass spokes and labels
+    rview = float(np.nanpercentile(r, 95))
+    step = next(v for v in (10, 20, 25, 50, 100, 200, 250, 500) if rview / v <= 4.5)
+    rings = np.arange(step, rview + step * 0.999, step)
+    ring_lo, ring_la = [], []
+    for rr in rings:
+        lo_, la_ = _ring(rr)
+        ring_lo += list(lo_) + [None]; ring_la += list(la_) + [None]
+    rout = rings[-1]
+    for ang in range(0, 360, 45):                                  # spokes
+        sx, sy = _to_lonlat([0, rout * math.sin(math.radians(ang))], [0, rout * math.cos(math.radians(ang))])
+        ring_lo += list(sx) + [None]; ring_la += list(sy) + [None]
+    fig.add_trace(go.Scattermap(lon=ring_lo, lat=ring_la, mode="lines", hoverinfo="skip", showlegend=False,
+                                line=dict(color="rgba(255,255,255,0.3)", width=1)))      # faint grid
+    olo, ola = _ring(rout)
+    fig.add_trace(go.Scattermap(lon=olo, lat=ola, mode="lines", hoverinfo="skip", showlegend=False,
+                                line=dict(color="rgba(255,255,255,0.55)", width=1.2)))   # outer ring
+    tl = math.radians(67.5)
+    lx, ly = _to_lonlat(rings * math.sin(tl), rings * math.cos(tl))
+    fig.add_trace(go.Scattermap(lon=lx, lat=ly, mode="text", text=[f"{v:g} m" for v in rings],
+                                hoverinfo="skip", showlegend=False,
+                                textfont=dict(size=11, color="rgba(255,255,255,0.85)")))
+    names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    cx, cy = _to_lonlat([rout * 1.08 * math.sin(math.radians(a)) for a in range(0, 360, 45)],
+                        [rout * 1.08 * math.cos(math.radians(a)) for a in range(0, 360, 45)])
+    fig.add_trace(go.Scattermap(lon=cx, lat=cy, mode="text", text=names, hoverinfo="skip", showlegend=False,
+                                textfont=dict(size=13, color="white")))
+
     lim = float(np.nanpercentile(np.abs(x[FCH4_COL]), 95)) or 1.0
     order = np.argsort(np.abs(x[FCH4_COL].to_numpy()))           # strongest fluxes drawn on top
     xs = x.iloc[order]
     lon, lat = lon[order], lat[order]
-    fig.add_trace(go.Scattermap(lon=lon, lat=lat, mode="markers", hoverinfo="skip", showlegend=False,
-                                marker=dict(size=10, color="rgba(20,25,35,0.85)")))   # dark outline
     fig.add_trace(go.Scattermap(
         lon=lon, lat=lat, mode="markers", name="half-hours (colour = FCH4)",
-        marker=dict(size=7, color=xs[FCH4_COL].clip(-lim, lim), colorscale="RdBu_r", cmid=0,
+        marker=dict(size=8, color=xs[FCH4_COL].clip(-lim, lim), colorscale="RdBu_r", cmid=0,
+                    cmin=-lim, cmax=lim, opacity=0.85,
                     colorbar=dict(title="FCH4<br>nmol m\u207b\u00b2 s\u207b\u00b9", thickness=12, len=0.6)),
         customdata=np.c_[xs[FCH4_COL], xs[WD_COL], xs[SOURCE_FETCH_COL], xs[TIME_COL].dt.strftime("%y/%m/%d %H:%M")],
         hovertemplate="%{customdata[3]}<br>WD %{customdata[1]:.0f}\u00b0 \u00b7 " + pct
                       + "% fetch %{customdata[2]:.0f} m<br>FCH4 %{customdata[0]:.1f}<extra></extra>"))
+    fig.data = tuple(t for t in fig.data if t.name != f"median {pct}% fetch") + \
+        tuple(t for t in fig.data if t.name == f"median {pct}% fetch")       # dotted line on top
     fig.add_trace(_tower_trace())
-    rview = float(np.nanpercentile(r, 95))
-    fig = _map_layout(fig, f"{title} \u00b7 n = {len(x)}", max(rview, 60) * 1.05, tip)
+    fig = _map_layout(fig, f"{title} \u00b7 n = {len(x)}", max(rout * 1.25, 60), tip)
     fig.update_layout(legend=dict(bgcolor="rgba(255,255,255,0.85)"))
     return fig
 
