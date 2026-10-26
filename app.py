@@ -1041,35 +1041,61 @@ def _empty_fig(title, msg="Not enough data"):
     return f
 
 
+ROSE_SECTORS = 36                                   # 10-degree petals
+ROSE_WS_BINS = [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, np.inf]
+
+
 def make_wind_rose(d: pd.DataFrame) -> go.Figure:
+    """Colourful wind rose: 10-degree sectors, stacked by wind-speed class (Viridis, calm = dark),
+    radius = % of half-hours."""
     title = "Wind rose"
     if WD_COL not in d or WS_COL not in d:
         return _empty_fig(title)
     x = d[[WD_COL, WS_COL]].dropna()
     if x.empty:
         return _empty_fig(title)
-    width = 22.5
-    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-    sec = (((x[WD_COL] + width / 2) % 360) // width).astype(int)
-    bins = [0, 1, 2, 3, 5, float("inf")]
-    labels = ["0-1", "1-2", "2-3", "3-5", ">5"]
-    colors = ["#c6dbef", "#9ecae1", "#6baed6", "#3182bd", "#08519c"]
-    spd = pd.cut(x[WS_COL], bins=bins, labels=labels, right=False)
+    from plotly.colors import sample_colorscale
+    w = 360 / ROSE_SECTORS
+    sec = (((x[WD_COL] + w / 2) % 360) // w).astype(int)
+    edges = ROSE_WS_BINS
+    used = int(np.searchsorted(edges, x[WS_COL].max(), side="right"))   # drop empty top classes
+    edges = edges[:max(used, 2) + 1] if used < len(edges) - 1 else edges
+    nb = len(edges) - 1
+    labels = [f"{edges[i]:g}\u2013{edges[i + 1]:g}" if np.isfinite(edges[i + 1]) else f"> {edges[i]:g}"
+              for i in range(nb)]
+    cols = sample_colorscale("Viridis", list(np.linspace(0.05, 1.0, nb)))
+    spd = pd.cut(x[WS_COL], edges, labels=False, right=False)
     n = len(x)
+    theta = np.arange(ROSE_SECTORS) * w
     f = go.Figure()
-    for lab, col in zip(labels, colors):
-        freq = [100 * ((sec == i) & (spd == lab)).sum() / n for i in range(16)]
-        f.add_trace(go.Barpolar(r=freq, theta=dirs, name=lab, marker_color=col,
-                                hovertemplate="%{theta}: %{r:.1f}%<extra>" + lab + " m/s</extra>"))
+    for i, (lab, col) in enumerate(zip(labels, cols)):
+        freq = np.bincount(sec[spd == i], minlength=ROSE_SECTORS)[:ROSE_SECTORS] / n * 100
+        f.add_trace(go.Barpolar(r=freq, theta=theta, width=w * 0.92, name=f"{lab} m/s", marker_color=col,
+                                marker_line=dict(color="rgba(30,30,40,0.55)", width=0.6),
+                                hovertemplate="%{theta}\u00b0: %{r:.2f}%<extra>" + lab + " m/s</extra>"))
+    # discrete colour bar for wind speed (invisible carrier trace)
+    ticks = list(range(nb))
+    cs = []
+    for i, c in enumerate(cols):
+        cs += [[i / nb, c], [(i + 1) / nb, c]]
+    f.add_trace(go.Scatter(x=[None], y=[None], mode="markers", showlegend=False, hoverinfo="skip",
+                           marker=dict(color=[0], cmin=-0.5, cmax=nb - 0.5, colorscale=cs, showscale=True,
+                                       colorbar=dict(title="Wind speed<br>(m s\u207b\u00b9)", thickness=14,
+                                                     len=0.75, tickvals=ticks, ticktext=labels,
+                                                     tickfont=dict(size=10)))))
     f.update_layout(
-        title=dict(text=title, x=0.5), height=460, margin=dict(l=60, r=60, t=60, b=70),
-        meta={"tip": "Wind rose — how often the wind blew from each direction, by wind-speed class\n"
-                     + title_tip(WD_COL, WS_COL)},
-        legend=dict(title="Wind speed (m/s)", orientation="h", x=0.5, xanchor="center",
-                    y=-0.08, yanchor="top", font=dict(size=11)),
-        polar=dict(angularaxis=dict(direction="clockwise", rotation=90),
-                   radialaxis=dict(ticksuffix="%", angle=45, tickfont=dict(size=9))),
+        title=dict(text=f"{title} \u00b7 n = {n}", x=0.5), height=MAP_HEIGHT_PX, showlegend=False,
+        margin=dict(l=40, r=40, t=60, b=40), barmode="stack",
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        meta={"tip": "Wind rose: direction the wind comes from (10\u00b0 sectors); petal length = % of "
+                     "half-hours; colour = wind-speed class\n" + title_tip(WD_COL, WS_COL)},
+        polar=dict(bgcolor="white",
+                   angularaxis=dict(direction="clockwise", rotation=90, tickmode="array",
+                                    tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
+                                    ticktext=["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+                                    tickfont=dict(size=13, color="#1f2a33"), gridcolor="#d9dee4"),
+                   radialaxis=dict(ticksuffix="%", angle=67.5, tickangle=67.5, nticks=5,
+                                   tickfont=dict(size=10, color="#c0392b"), gridcolor="#d9dee4")),
     )
     return f
 
@@ -1396,51 +1422,57 @@ def make_footprint_map(d: pd.DataFrame) -> go.Figure:
     return _map_layout(fig, f"{title} \u00b7 n = {len(x)}", max(r90, 60) * 1.1, tip)
 
 
-SOURCE_FETCH_COL = "FETCH_70"        # distance plotted on the CH4 source distribution (e.g. FETCH_90)
+SOURCE_FETCH_COL = "FETCH_90"        # footprint distance used on the source-direction map
 
 
-def make_source_polar(d: pd.DataFrame) -> go.Figure:
-    """Flux footprint and source direction: each half-hour at its wind direction and footprint distance
-    (SOURCE_FETCH_COL), coloured by FCH4; dotted line = median distance per 22.5 deg sector."""
+def make_source_map(d: pd.DataFrame) -> go.Figure:
+    """Flux footprint and source direction on the satellite map: each half-hour is placed upwind of the
+    tower (wind direction) at its 90% footprint distance (FETCH_90) and coloured by FCH4; the dotted line
+    is the median 90% fetch per 22.5 deg sector. Follows the dashboard's QC / u* / wind filters."""
     pct = SOURCE_FETCH_COL.split("_")[-1]
     title = "Flux footprint and source direction"
-    tip = (f"Each dot is a half-hour: direction = wind direction, distance = {pct}% footprint fetch "
-           f"({SOURCE_FETCH_COL}), colour = CH\u2084 flux (SSITC flag 0\u20131 only)\nDotted line = median {pct}% fetch per sector\n"
-           + title_tip(FCH4_COL, SOURCE_FETCH_COL, WD_COL))
+    tip = (f"Each dot is a half-hour, drawn upwind of the tower at the distance holding {pct}% of the "
+           f"flux footprint ({SOURCE_FETCH_COL}); colour = CH\u2084 flux\n"
+           f"Dotted line = median {pct}% fetch per wind sector\n" + title_tip(FCH4_COL, SOURCE_FETCH_COL, WD_COL))
+    fig = go.Figure()
     if not {WD_COL, SOURCE_FETCH_COL, FCH4_COL} <= set(d.columns):
-        return _empty_fig(title)
+        fig.add_trace(_tower_trace())
+        return _map_layout(fig, title + " (columns missing)", 250, tip)
     x = d[[TIME_COL, WD_COL, SOURCE_FETCH_COL, FCH4_COL]].dropna()
-    if FCH4_QC_COL in d:                                   # good-quality fluxes only (SSITC 0-1)
-        x = x[d.loc[x.index, FCH4_QC_COL] <= 1]
+    x = x[x[SOURCE_FETCH_COL] > 0]
     if len(x) < 3:
-        return _empty_fig(title)
-    lim = float(np.nanpercentile(np.abs(x[FCH4_COL]), 95)) or 1.0
-    fig = go.Figure(go.Scatterpolar(
-        r=x[SOURCE_FETCH_COL], theta=x[WD_COL] % 360, mode="markers",
-        name="half-hours (colour = FCH4)",
-        marker=dict(size=7, color=x[FCH4_COL].clip(-lim, lim), colorscale="RdBu_r", cmid=0, opacity=0.85,
-                    colorbar=dict(title="FCH4<br>nmol m\u207b\u00b2 s\u207b\u00b9", thickness=12)),
-        customdata=np.c_[x[FCH4_COL], x[TIME_COL].dt.strftime("%y/%m/%d %H:%M")],
-        hovertemplate="%{customdata[1]}<br>WD %{theta:.0f}\u00b0 \u00b7 " + pct
-                      + "% fetch %{r:.0f} m<br>FCH4 %{customdata[0]:.1f}<extra></extra>"))
+        fig.add_trace(_tower_trace())
+        return _map_layout(fig, title + " (not enough data)", 250, tip)
+    a = np.deg2rad(x[WD_COL].to_numpy(float) % 360)
+    r = x[SOURCE_FETCH_COL].to_numpy(float)
+    lon, lat = _to_lonlat(r * np.sin(a), r * np.cos(a))
+    # median distance per sector (closed dotted line)
     sec = _sector_index(x[WD_COL], 16)
     m = x[SOURCE_FETCH_COL].groupby(sec).median().reindex(range(16))
     if m.notna().sum() >= 2:
-        m = m.interpolate(limit_direction="both")
-        fig.add_trace(go.Scatterpolar(
-            r=np.append(m.values, m.values[0]), theta=np.append(np.arange(16) * 22.5, 360),
-            mode="lines", name=f"median {pct}% fetch", line=dict(color="#1f2a33", width=2, dash="dot"),
-            hovertemplate="%{theta:.1f}\u00b0<br>median %{r:.0f} m<extra></extra>"))
-    rmax = float(np.nanpercentile(x[SOURCE_FETCH_COL], 97))
-    fig.update_layout(
-        title=dict(text=f"{title} (FCH4 QC 0\u20131) \u00b7 n = {len(x)}", x=0.5), height=MAP_HEIGHT_PX,
-        margin=dict(l=50, r=50, t=60, b=60), meta={"tip": tip},
-        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.06, yanchor="top"),
-        polar=dict(angularaxis=dict(direction="clockwise", rotation=90, tickmode="array",
-                                    tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
-                                    ticktext=["N", "NE", "E", "SE", "S", "SW", "W", "NW"]),
-                   radialaxis=dict(range=[0, rmax], ticksuffix=" m", angle=67.5, tickangle=67.5,
-                                   nticks=4, tickfont=dict(size=10))))
+        m = m.interpolate(limit_direction="both").to_numpy()
+        th = np.deg2rad(np.arange(17) * 22.5)
+        mr = np.append(m, m[0])
+        mlo, mla = _to_lonlat(mr * np.sin(th), mr * np.cos(th))
+        fig.add_trace(go.Scattermap(lon=mlo, lat=mla, mode="lines", name=f"median {pct}% fetch",
+                                    line=dict(color="#ffffff", width=2.5), hoverinfo="skip"))
+    lim = float(np.nanpercentile(np.abs(x[FCH4_COL]), 95)) or 1.0
+    order = np.argsort(np.abs(x[FCH4_COL].to_numpy()))           # strongest fluxes drawn on top
+    xs = x.iloc[order]
+    lon, lat = lon[order], lat[order]
+    fig.add_trace(go.Scattermap(lon=lon, lat=lat, mode="markers", hoverinfo="skip", showlegend=False,
+                                marker=dict(size=10, color="rgba(20,25,35,0.85)")))   # dark outline
+    fig.add_trace(go.Scattermap(
+        lon=lon, lat=lat, mode="markers", name="half-hours (colour = FCH4)",
+        marker=dict(size=7, color=xs[FCH4_COL].clip(-lim, lim), colorscale="RdBu_r", cmid=0,
+                    colorbar=dict(title="FCH4<br>nmol m\u207b\u00b2 s\u207b\u00b9", thickness=12, len=0.6)),
+        customdata=np.c_[xs[FCH4_COL], xs[WD_COL], xs[SOURCE_FETCH_COL], xs[TIME_COL].dt.strftime("%y/%m/%d %H:%M")],
+        hovertemplate="%{customdata[3]}<br>WD %{customdata[1]:.0f}\u00b0 \u00b7 " + pct
+                      + "% fetch %{customdata[2]:.0f} m<br>FCH4 %{customdata[0]:.1f}<extra></extra>"))
+    fig.add_trace(_tower_trace())
+    rview = float(np.nanpercentile(r, 95))
+    fig = _map_layout(fig, f"{title} \u00b7 n = {len(x)}", max(rview, 60) * 1.05, tip)
+    fig.update_layout(legend=dict(bgcolor="rgba(255,255,255,0.85)"))
     return fig
 
 
@@ -2370,12 +2402,12 @@ def flux_card_specs(vars_list, custom_specs, dff):
                       lambda d, u, dt, tf, p=p: make_panel_figure(d, p, u, dt, tf, color=SERIES_COLORS[0])))
     n = len(vars_list)
     cards += [
-        (n, {WD_COL, WS_COL}, lambda d, *_: make_wind_rose_map(d)),
+        (n, {WD_COL, WS_COL}, lambda d, *_: make_wind_rose(d)),
         (n + 1, {FCH4_COL, WD_COL}, lambda d, *_: make_fch4_vs_wd(d)),
         (n + 2, {FCH4_COL, FC_COL}, lambda d, *_: make_fch4_fc_regression(d)),
         (n + 3, {FCH4_COL, WD_COL}, lambda d, *_: make_fch4_surface(d)),
         (n + 4, {c for c, *_ in DIURNAL_VARS}, lambda d, *_: make_diurnal(d)),
-        (n + 6, {FCH4_COL, WD_COL, SOURCE_FETCH_COL}, lambda d, *_: make_source_polar(d)),
+        (n + 6, {FCH4_COL, WD_COL, SOURCE_FETCH_COL}, lambda d, *_: make_source_map(d)),
     ]
     return cards
 
@@ -2456,7 +2488,8 @@ def render_tab(tab_value, start_date, end_date, _n, tgamon_display, *args):
             html.Div([plot_card(figs[i], i) for i in range(n)], className="card-grid"),
         ]),
         html.Div(className="section", children=[
-            section_header("Site map, flux footprint and source direction", f"EC tower at {TOWER_LAT:.6f}, {TOWER_LON:.6f}"),
+            section_header("Wind rose, flux footprint and source direction",
+                           f"EC tower at {TOWER_LAT:.6f}, {TOWER_LON:.6f}"),
             html.Div(className="card-grid card-grid-maps",
                      children=[plot_card(figs[n], n), plot_card(figs[n + 6], n + 6)]),
         ]),
