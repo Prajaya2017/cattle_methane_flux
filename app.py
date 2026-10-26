@@ -1757,7 +1757,6 @@ def serve_layout():
         html.Header(className="app-header", children=[
             html.Div(className="header-inner", children=[
                 html.Div(className="brand", children=[
-                    html.Div("CH₄", className="brand-mark"),
                     html.Div([
                         html.H1("TGA310 Cattle CH₄ Emission Measurement", className="app-title"),
                         html.Div("Eddy covariance flux monitoring · USU test site · "
